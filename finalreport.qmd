@@ -1,0 +1,183 @@
+---
+title: "Title of Project (TBD)\\vspace{-2cm}"
+bibliography: references.bib
+nocite: "@*"
+csl: ieee.csl
+format:
+  pdf:
+    include-in-header:
+      text: |
+        \RedeclareSectionCommand[beforeskip=0.5em, runin=false, afterskip=0em]{section}
+        \usepackage{fullpage}
+        \usepackage{wrapfig}
+number-sections: true
+---
+## Abstract {.unnumbered}
+
+
+
+# Introduction
+
+## Background Information
+
+<!-- 
+Intern Health Study (IHS) 2024 -> data on ~1000 new doctors
+
+three domains (mood, sleep, and activity) but we are only focusing on activity
+
+three wearable devies (garmin, apple, fitbit) -> disconnect in devices
+
+at 3 pm, individuals have a 50% change of receiving a message (decided by an agent) 
+
+goal: maximize step count which is the reward (I think?)
+-->
+
+The Intern Health Study (IHS) 2024 contains data on approximately 1,000 new doctors. The study collects information across three domains: mood, sleep, and physical activity. In this project, we focus only on physical activity which is measured using step count. Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
+
+At 3:00 p.m. each day, an agent decides whether a participant receives a message, with a 50% probability of sending a message and a 50% probability of not sending one. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest.
+
+## Project Motivation
+
+<!-- 
+RoME is a robust contextual bandit method for health apps that decides when to send notifications and how to personalize interventions based on the user’s current situation. @RoME
+
+Oralytics, a mHealth intervention system, uses an online RL algorithm to determine optimal times for delivering interventions to promote oral self-care behaviors. @Oralytics
+
+Missing data may result in distortions that alter algorithm behavior. Robust strategies are needed to handle delayed and missing data because the algorithm needs to continue functioning despite these challenges and ensure reproducibility. @DigitalHealth
+-->
+
+Reinforcement learning and contextual bandit methods are becoming increasingly important in healthcare because they enable personalized interventions. In digital health, these methods can be used to decide when and how to deliver prompts that encourage healthier behaviors, such as increasing physical activity or improving medication adherence. Contextual bandits are especially useful because they incorporate patient characteristics when selecting an action. For example, RoME is a robust contextual bandit method for mobile health applications that determines when to send notifications and how to personalize interventions based on a user’s current situation. @RoME Similarly, Oralytics is a mobile health intervention system that uses an online reinforcement learning algorithm to determine optimal times to deliver interventions that promote oral self-care behaviors. @Oralytics
+
+This project is motivated by the growing need to apply these methods in realistic settings where data is often incomplete. In our dataset, missingness occurs when users do not wear their devices which leads to gaps in the recorded activity data. Missing data can distort the information available to the algorithm and may ultimately affect its behavior and performance. As a result, robust strategies for handling delayed and missing data are essential so that the algorithm can continue to function reliably and produce reproducible results. @DigitalHealth
+
+## Past Project Study
+
+1. [Heart Rate Variability](https://ionides.github.io/531w25/final_project/project10/blinded.pdf)
+- measuring physical activity (we are using step count instead)
+
+a couple of sentences about what we are doing differently compared to past projects
+
+(not sure if we should list other projects since most are related to diseases)
+
+## Research Question
+
+people are not consistently wearing the devices -> missing data problem
+
+missing rewards using POMP model
+
+# Data Overview
+
+## Data Description and Preprocessing
+
+short description of where the data was obtained and variables included (more in-depth explanation of variables will be in the supplementary material)
+
+how often is the data collected (every hour) and time period (using 3 months data)
+
+* eda plots and summary statistics
+  + sample size (~1000 doctors)
+  + percent of users using each device (88 garmin, 800 apple, 299 fitbit)
+    + we are focusing on participants that use fitbit but will use info provided by other devices if necessary
+  + missing data
+
+## Design Decisions (maybe combine with Data Description and Preprocessing)
+
+need to define buckets (user, hour) -> are we dividing the day up into thirds or keeping the 24 hours (UDPATE: using 24 hours for the buckets which makes it easier to define missingness)
+
+how much data needs to be missing to be considered "missing" for each bucket
+
+# Methodology and Results
+
+## Variable Selection
+
+select the most important covariates for each individual to make it personalized for the user
+
+## Model 1: ARIMA
+
+insert relevant equations
+
+### Model Selection
+
+insert AIC table
+
+### Diagnostics
+
+residuals, acf plot, qq plot
+
+## Model 2: Individual POMP
+
+paragraph 1: filter for individuals with low missing rates
+
+paragraph 2: insert relevant equations
+
+###  Initial Parameter Estimation
+
+insert parameter estimates
+
+insert graph with simulated data based on parameter estimates
+
+### Local Search
+
+
+
+### Global Search
+
+
+
+## Model 3: Pooling
+
+insert relevant equations
+
+cite the library documentation in references maybe
+
+### Initial Parameter Estimation
+
+
+
+### Local Search
+
+
+
+### Global Search
+
+
+## Diagnostics
+
+rmse, masking for the prediction error, likelihood
+
+compare rmse based on amount of missing data
+
+# Conclusion
+
+paragraph 1: summary of the analysis that was done
+
+paragraph 2: limitations, direction for future analysis, wrap up sentence
+
+# Contributions
+- Group Member 1: 
+- Group Member 2: 
+- Group Member 3: 
+
+# Acknowledgments {.unnumbered}
+This report used the template available in the STATS 531 github. AI was used with Chatgpt 5.3Codex, extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VScode extensions.
+
+# Bibliography {.unnumbered}
+
+::: {#refs}
+:::
+
+# Supplementary material {#sec-supp}
+
+## Data Sources and Transformations
+
+description of where data was obtained
+
+The following data files were used for this project:
+
+* name of csv file
+    + variable name: description of variable
+    + variable name: description of variable
+    + variable name: description of variable
+* name of csv file
+    + variable name: description of variable
+    + variable name: description of variable
+    + variable name: description of variable
