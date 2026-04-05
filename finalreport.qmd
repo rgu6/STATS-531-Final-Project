@@ -85,11 +85,63 @@ need to define buckets (user, hour) -> are we dividing the day up into thirds or
 
 how much data needs to be missing to be considered "missing" for each bucket
 
+Benchmark test:
+Mask a percentage of the data (uniformly random missing hourly buckets, or uniformly random missing whole days of data), fit the smoother on both the masked data and unmasked data, calculate the RMSE for each. Run this across multiple fractions of missing data; i.e. if $m$ is the fraction of the data we mask, then we might sweep across $m = 0.1, 0.2, 0.3, 0.4, 0.5$ and see what the relationship is between amount of artificial missingness, actual missingness, performance of the smoother and filter in both settings, for each participant. Try this with individual models, and with a joint panel pomp.
+
+Unsolved design problems:
+Which variables will be pooled, or partially pooled?
+Potential features to do feature selection for personalized covariates
+In $\log \lambda_t$, the $x_t$ could potentially be overwhelmed in size by the $\beta^\intercal z_t$, the $\alpha_{h(t)}$ or the $\delta_{w(t)}$, especially because the latter two are chosen not within the pomp itself so their scale may be off.
+How do we handle the connection between multiple devices, or do we say screw it?
+If we do pooling, clustering of participants could be useful. How might we go about clustering participants?
+
 # Methodology and Results
 
 ## Variable Selection
 
+
+Model:
+Latent process:
+$$
+x_{t+1} = \phi x_t + \sigma \epsilon_t, 
+\qquad \epsilon_t \sim N(0, 1)
+$$
+$$
+N_t | x_t \sim \text{Poisson}(\lambda, t),
+\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t
+$$
+
+$$
+Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)
+$$
+
+$$
+Y^A_t | N_t \sim \text{NegBin}(q_A N_t, k_A)
+$$
+
+
+$$
+Y^G_t | N_t \sim \text{NegBin}(q_G N_t, k_G)
+$$
+
+Our aim is to estimate the step count 24 hours after 3pm local time each day:
+$$
+R_d = \sum \limits_{t \in W(d)} N_t
+$$
+
+The latent time model is a simple AR(1). The other components of the $\lambda_t$ are $\alpha_{h(t)}$, a personalized time of day factor, $\delta_{w(t)}$ a personalized day of week factor, and $\beta^\intercal z_t$, which are any covariates we decide to add. The $\alpha_{h(t)}$ and $\delta_{w(t)}$ are computed by simple averages of their measured step counts in the given hourly bucket. That is, $h(t)$ is the local hour of the day of time point $t$, and $w(t)$ is the day of the week of the time point $t$, and  $\alpha_{13}$ means the average step count in the 13th hourly bucket each day for this user, and $\delta_4$ means the average step count on the 4th day of the week (Thursday).
+
+Because $\log \lambda_t$ is a linear model, we'll do variable selection for the features chosen in $z_t$ via a linear model. Specifically, we'll do it in a personalized way across all participants, using LASSO. Across a large set of candidate features, run a regression, use cross validation to pick the best penalty value. The variables which vanish under this penalty we don't pick, the variables which stay, we do pick. We run this across all participants being studied, so each user has a personalized feature set.
+
+In the observation distributions, picking $k_F$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t^F | N_t) = N_t + \frac{N^2_t}{k_F}$. When $k_F \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k_F$ large, we have Poisson distribution. But from running a few of these, $k_F$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
+
+Our interpretation of $k_F$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k_F \sim N(\mu_F, \sigma^2_F)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k_F$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
+
+The $k_A$ and $k_G$ are basically the same estimation problem. We have other pools of participants that we can estimate them with, but those might be related to their -own- latent distributions, which is related to this problem of estimating $q_A$ and $q_G$. We aren't sure if we're even incorporating other devices, so this is lower priority. In a nutshell, we can try to estimate $q_A$ by checking hourly buckets with overlap between Fitbit and Apple, and try to see if there's a strong correlation. The $q_A$ would be the regression coefficient, perhaps the uncertainty from the regression or $R^2$ can be pushed through into the variance of the measurement distribution.
+
 select the most important covariates for each individual to make it personalized for the user
+
+
 
 ## Model 1: ARIMA
 
