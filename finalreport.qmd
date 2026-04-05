@@ -73,6 +73,9 @@ short description of where the data was obtained and variables included (more in
 
 how often is the data collected (every hour) and time period (using 3 months data)
 
+*Justify why Fitbit only
+*Justify using 99 Fitbit people, and how much missingness (there's what percentage of hours are missing, additionally what percentage of days are considered missing (>12 hours missing in one day is a missing day))
+*sample statistics like mean, std
 * eda plots and summary statistics
   + sample size (~1000 doctors)
   + percent of users using each device (88 garmin, 800 apple, 299 fitbit)
@@ -99,6 +102,16 @@ If we do pooling, clustering of participants could be useful. How might we go ab
 
 ## Variable Selection
 
+LASSO cross validation for variable selection thing (if we get to it)
+
+
+## Individual
+
+### Model
+
+paragraph 1: filter for individuals with low missing rates
+
+paragraph 2: insert relevant equations
 
 Model:
 Latent process:
@@ -126,7 +139,7 @@ $$
 
 Our aim is to estimate the step count 24 hours after 3pm local time each day:
 $$
-R_d = \sum \limits_{t \in W(d)} N_t
+R_d = \sum \limits_{t \in H(d)} N_t
 $$
 
 The latent time model is a simple AR(1). The other components of the $\lambda_t$ are $\alpha_{h(t)}$, a personalized time of day factor, $\delta_{w(t)}$ a personalized day of week factor, and $\beta^\intercal z_t$, which are any covariates we decide to add. The $\alpha_{h(t)}$ and $\delta_{w(t)}$ are computed by simple averages of their measured step counts in the given hourly bucket. That is, $h(t)$ is the local hour of the day of time point $t$, and $w(t)$ is the day of the week of the time point $t$, and  $\alpha_{13}$ means the average step count in the 13th hourly bucket each day for this user, and $\delta_4$ means the average step count on the 4th day of the week (Thursday).
@@ -139,47 +152,47 @@ Our interpretation of $k_F$ is that it's some kind of "how trustworthy is a Fitb
 
 The $k_A$ and $k_G$ are basically the same estimation problem. We have other pools of participants that we can estimate them with, but those might be related to their -own- latent distributions, which is related to this problem of estimating $q_A$ and $q_G$. We aren't sure if we're even incorporating other devices, so this is lower priority. In a nutshell, we can try to estimate $q_A$ by checking hourly buckets with overlap between Fitbit and Apple, and try to see if there's a strong correlation. The $q_A$ would be the regression coefficient, perhaps the uncertainty from the regression or $R^2$ can be pushed through into the variance of the measurement distribution.
 
-select the most important covariates for each individual to make it personalized for the user
 
 
 
-## Model 1: ARIMA
 
-insert relevant equations
-
-### Model Selection
-
-insert AIC table
-
-### Diagnostics
-
-residuals, acf plot, qq plot
-
-## Model 2: Individual POMP
-
-paragraph 1: filter for individuals with low missing rates
-
-paragraph 2: insert relevant equations
 
 ###  Initial Parameter Estimation
 
-insert parameter estimates
+Show one person's parameters and what their model looks like
+
+Show aggregate parameters.
+
+Show what models look like with high missingness vs low missingness, and the problem of divergence when there's big contiguous missing chunks
 
 insert graph with simulated data based on parameter estimates
 
 ### Local Search
-
-
+*Thursday
+Design local search
+(RL = 0)
 
 ### Global Search
+*Thursday
+Design global search
+
+### Diagnostics
+(individual level diagnostics)
+Plot of filtered vs smoothed vs observation data
+Masking, filtered/smoothed performance with RMSE.
+How much masking causes how much RMSE? 
+(plot masked fraction vs hourly RMSE)
+Masking random hours, vs whole days?
+Divergence for people with contiguous missingness, vs spotty missingness
 
 
+## Aggregate modeling
 
-## Model 3: Pooling
+Even without panel pomp, we do big aggregate models. Aggregate testing RMSE vs missingness across all the participants.
 
-insert relevant equations
+Aggregate parameter estimates ($\phi, \sigma, k_F$ for each participant averaged, std deviation too)
 
-cite the library documentation in references maybe
+If we get the chance, partial pooling panel pomp with a $k_F$ from a shared distribution.
 
 ### Initial Parameter Estimation
 
@@ -194,9 +207,7 @@ cite the library documentation in references maybe
 
 ## Diagnostics
 
-rmse, masking for the prediction error, likelihood
 
-compare rmse based on amount of missing data
 
 # Conclusion
 
