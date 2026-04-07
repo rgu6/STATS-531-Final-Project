@@ -50,14 +50,19 @@ Reinforcement learning and contextual bandit methods are becoming increasingly i
 
 This project is motivated by the growing need to apply these methods in realistic settings where data is often incomplete. In our dataset, missingness occurs when users do not wear their devices which leads to gaps in the recorded activity data. Missing data can distort the information available to the algorithm and may ultimately affect its behavior and performance. As a result, robust strategies for handling delayed and missing data are essential so that the algorithm can continue to function reliably and produce reproducible results. @DigitalHealth
 
-## Past Project Study
+## Past Project Context
 
+<!-- 
 1. [Heart Rate Variability](https://ionides.github.io/531w25/final_project/project10/blinded.pdf)
-- measuring physical activity (we are using step count instead)
 
-a couple of sentences about what we are doing differently compared to past projects
+LG-POMP model; Apple measurements only
+Peer review comments - more diagnostic plots, like looking at likelihood anomalies
+No description of time zone handling
+-->
 
-(not sure if we should list other projects since most are related to diseases)
+Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about step count in the next 24 hours following a motivating message.
+
+Both projects face the same issue of missing data. The HRV project pooled all participants together into a population-level daily summary, taking the median measurement of each day, while we initally designed POMP models for individual participants and then **[describe our pooling method]**. We investigate the effects of missingness on model performance by masking a percentage of the data, fitting a smoother, and calculating the RMSE. [**Haven't done yet** We also include other measurements from the wearable device as covariates in our model, which the HRV project did not do.] After reading past peer reviews, we made sure to add more diagnostic plots, including those describing likelihood anomalies and effective sample size.
 
 ## Research Question
 
@@ -221,7 +226,7 @@ paragraph 2: limitations, direction for future analysis, wrap up sentence
 - Group Member 3: 
 
 # Acknowledgments {.unnumbered}
-This report used the template available in the STATS 531 github. AI was used with Chatgpt 5.3Codex, extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VScode extensions.
+This report used the template available in the STATS 531 github. AI was used with Chatgpt 5.3Codex, extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VScode extensions. Microsoft Copilot was also used for code autocomplete.
 
 # Bibliography {.unnumbered}
 
