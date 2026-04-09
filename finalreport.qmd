@@ -78,9 +78,9 @@ short description of where the data was obtained and variables included (more in
 
 how often is the data collected (every hour) and time period (using 3 months data)
 
-*Justify why Fitbit only
-*Justify using 99 Fitbit people, and how much missingness (there's what percentage of hours are missing, additionally what percentage of days are considered missing (>12 hours missing in one day is a missing day))
-*sample statistics like mean, std
+* Justify why Fitbit only
+* Justify using 99 Fitbit people, and how much missingness (there's what percentage of hours are missing, additionally what percentage of days are considered missing (>12 hours missing in one day is a missing day))
+* sample statistics like mean, std
 * eda plots and summary statistics
   + sample size (~1000 doctors)
   + percent of users using each device (88 garmin, 800 apple, 299 fitbit)
@@ -109,6 +109,9 @@ If we do pooling, clustering of participants could be useful. How might we go ab
 
 LASSO cross validation for variable selection thing (if we get to it)
 
+For each individual, we selected a set of covariates to improve the model’s ability to capture long-term dependence. This allowed the covariates included in the model to vary across doctors. As covariates, we used other health-related measures collected by the wearable devices, such as mood, heart rate variability, and sleep. We then performed feature engineering to construct additional variables, such as an indicator for whether the doctor exercised within the previous 24 hours based on heart rate data.
+
+Next, we used these covariates in a Lasso model with cross-validation to perform feature selection for each individual. For individuals with substantial missing data for a given covariate, that covariate was excluded from the final feature set. (Explain how we removed variables based on the degree of missingness.)
 
 ## Individual
 
