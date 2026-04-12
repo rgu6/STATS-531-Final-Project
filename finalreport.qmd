@@ -238,15 +238,28 @@ This report used the template available in the STATS 531 github. AI was used wit
 
 ## Data Sources and Transformations
 
-description of where data was obtained
+This project uses 2024 Intern Health Study (IHS) data provided by group member [insert Drew's group member number], who is currently conducting research on this topic.
 
 The following data files were used for this project:
 
-* name of csv file
-    + variable name: description of variable
-    + variable name: description of variable
-    + variable name: description of variable
-* name of csv file
-    + variable name: description of variable
-    + variable name: description of variable
-    + variable name: description of variable
+* FitbitHourly.csv
+    + PARTICIPANTIDENTIFIER: unique ID for each doctor that participated in the study
+    + STUDY_USER_ID: study-specific unique ID for each participant
+    + time_utc: local time
+      + date_utc: local date
+      + hour_of_day_utc: local hour (0-23)
+    + For Apple, Fitbit, and Garmin, the following data was recorded.
+      + Steps: observed (recorded) step count during that hour (blank if no data was collected)
+      + StepsMissing: binary indicator of whether data was collected for step count during that hour (1 = no data, 0 = data collected)
+      + HRAvg: average heart rate during that hour
+      + HRMin: minimum heart rate during that hour
+      + HRMax: maximum heart rate during that hour
+      + HRMissing: binary indicator of whether data was collected for heart rate during that hour (1 = no data, 0 = data collected)
+      + HRVAvg: average heart rate variability during that hour
+      + HRVMissing: binary indicator of whether data was collected for heart rate variability during that hour (1 = no data, 0 = data collected)
+      + SleepMinutes: observed (recorded) minutes of sleep during that hour (blank if no data was collected)
+      + SleepMissing: binary indicator of whether data was collected for sleep during that hour (1 = no data, 0 = data collected)
+    + moodScore: scores range from 0 to 10 based on a survey
+    + messageSent: binary indicator of whether the agent sent the participant a message during that hour (1 = message was sent, 0 = no message was sent)
+    + messageStrategy: NOT SURE
+
