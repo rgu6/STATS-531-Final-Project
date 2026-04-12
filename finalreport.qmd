@@ -191,6 +191,8 @@ How much masking causes how much RMSE?
 Masking random hours, vs whole days?
 Divergence for people with contiguous missingness, vs spotty missingness
 
+[Plot of the three participants' residuals vs missingness, with color-coded by participant, with trend line (potentially a single trendline for each person, and separate trend lines for each person)]
+
 
 ## Aggregate modeling
 
