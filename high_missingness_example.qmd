@@ -1,0 +1,2127 @@
+---
+title: "Homework 8\\vspace{-2cm}"
+bibliography: references.bib
+link-citations: true
+output: pdf_document
+execute:
+  echo: false
+format:
+  pdf:
+    fig-pos: H
+    tbl-pos: H
+    include-in-header:
+      text: |
+        \RedeclareSectionCommand[
+          beforeskip=0.5em,
+          runin=false,
+          afterskip=0em
+        ]{section}
+        \RedeclareSectionCommand[
+          beforeskip=0em,
+          runin=false,
+          afterskip=0em
+        ]{subsection}
+        \RedeclareSectionCommand[
+          beforeskip=0em,
+          runin=false,
+          afterskip=0em
+        ]{subsubsection}
+        \usepackage{fullpage}
+        \usepackage{float}
+        \usepackage{placeins}
+        \usepackage{wrapfig}
+        \usepackage{caption}
+        \captionsetup[figure]{labelformat=empty,labelsep=none}
+number-sections: true
+jupyter: python3
+---
+
+\newcommand\prob{\mathbb{P}}
+\newcommand\E{\mathbb{E}}
+\newcommand\var{\mathrm{Var}}
+\newcommand\cov{\mathrm{Cov}}
+
+# Source of the data
+
+Our data is from the 2024 Intern Health Study, which includes measurements of physical activity collected from medical interns wearing devices such as a Fitbit. The research data is not public. Our project is concerned with modeling step counts over time for these participants, and we are interested in predicting the step count every 24 hours to measure the impact of participants recieving a motivational message on random days. For this homework, each of us chose a different participant for preliminary modeling to compare how different levels of missingness affect the results. I chose participant MDH-3531-4796, who has a high level of missingness (approximately 50%).
+
+# Model
+We model using a POMP the latent $(N_t, x_t)$, where $N_t$ is the observed number of Fitbit steps in the hourly bucket $t$, and $x_t$ is an AR(1) model. $N_t$ is modeled by the conditional distribution $N_t | x_t \sim \text{Poisson}(\lambda_t)$, where $\log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t$. $\alpha_{h(t)}$ captures time-of-day effects. Likewise, $\delta_{w(t)}$ captures day-of-week effects. $z_t$ are potential features that we can select for each participant individually.
+
+The observation model is conditional on the observed number of steps, as $Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)$ where this is the mean-dispersion parametrization of the negative binomial. It has mean $N_t$ and variance $N_t + \frac{N_t^2}{k_F}$. $k_F$ is a dispersion parameter that controls how much variance we expect a given Fitbit measurement to have due to measurement error.
+
+Currently, we're using MLE to estimate $\phi, \sigma$ (the two parameters in the AR(1) model of $x_t$) and $k_F$. However, because $k_F$ has to do with the accuracy of Fitbit, we would like to pool it across participants in some way. 
+
+## Summary of model
+
+### Latent
+
+$$
+x_{t+1} = \phi x_t + \sigma \epsilon_t, 
+\qquad \epsilon_t \sim N(0, 1)
+$$
+$$
+N_t | x_t \sim \text{Poisson}(\lambda_t),
+\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t
+$$
+
+### Observation model:
+
+$$
+Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)
+$$
+
+For $$\ell_t = \log(\text{N}_t + 1)$$ the overall mean is
+$$
+\bar \ell = \frac{1}{T} \sum_{t=1}^T \ell_t.
+$$
+Then for each local hour $h \in \{0,\dots,23\}$, we take the average log step count in that hour and subtract the global mean:
+
+$$
+\tilde \alpha_h = \mathbb{E}[\ell_t \mid h(t)=h] - \bar \ell.
+$$
+Then the hour effects are centered so they average to $0$ across the 24 hours:
+$$
+\alpha_h = \tilde \alpha_h - \frac{1}{24}\sum_{r=0}^{23}\tilde \alpha_r.
+$$
+
+We do the same process for day of the week:
+$$
+\delta_w = \tilde \delta_w - \frac{1}{7}\sum_{s=0}^{6}\tilde \delta_s.
+$$
+
+So in practice, the baseline part of the log-intensity is built as
+$$
+\bar \ell + \alpha_{h(t)} + \delta_{w(t)}.
+$$
+This is the baseline for hour-of-day and weekday patterns before the latent AR(1) $x_t$ and, eventually, other covariates are added in.
+
+Our aim is to estimate the step count 24 hours after 3pm local time each day:
+$$
+R_d = \sum \limits_{t \in H(d)} N_t
+$$
+
+# Preliminary results and model implementation
+
+All parameter choices here:
+
+```{python}
+#| warning: false
+#| message: false
+# (set XDG_RUNTIME_DIR=HW8 to render quarto)
+
+# Cache controls
+enable_shelve_cache = True
+clear_shelve_cache = False
+cache_version_token = "hw8_cache_v1"
+shelve_cache_directory = ".hw8_cache"
+shelve_cache_basename = "HW8"
+
+# Participant and model controls
+participant_id = "MDH-3531-4796"
+analysis_start_utc_iso = "2024-07-01T00:00:00+00:00"
+analysis_end_utc_iso = "2024-09-30T23:00:00+00:00"
+participant_data_lookback_hours = 48
+assumed_local_timezone = "America/New_York"
+participant_covariate_keys = []  # Example: ["trail_steps_24h", "send_lag_0_3h"]
+estimated_free_params = ["phi", "sigma", "k_fitbit"]
+initial_phi = 0.75
+initial_sigma = 0.30
+initial_k_fitbit = 200.0
+
+# Local MLE controls
+local_mle_particles = 100
+local_mle_mif_iterations = 6
+local_mle_random_seed = 11
+local_mle_cooling_fraction = 0.50
+local_mle_rw_sd_scale = 0.02
+local_mle_evaluation_particles = 100
+local_mle_evaluation_pfilter_reps = 3
+
+# Global MLE search controls
+global_search_random_seed = 37
+global_search_include_current_theta_as_start = True
+global_search_jitter_scale = 0.10
+global_search_box_shrink_factor_per_stage = 1.00
+
+# Global MLE stage 1 controls
+global_stage1_name = "Stage 1"
+global_stage1_n_starts = 10
+global_stage1_keep_top = 3
+global_stage1_particles = 100
+global_stage1_mif_iterations = 4
+global_stage1_cooling_fraction = 0.50
+global_stage1_rw_sd_scale = 0.02
+global_stage1_evaluation_particles = 200
+global_stage1_evaluation_pfilter_reps = 2
+global_stage1_n_fresh_random_starts = 0
+global_stage1_n_jittered_restarts = 0
+
+# Global MLE stage 2 controls
+global_stage2_name = "Stage 2"
+global_stage2_n_starts = 4
+global_stage2_keep_top = 2
+global_stage2_particles = 160
+global_stage2_mif_iterations = 8
+global_stage2_cooling_fraction = 0.50
+global_stage2_rw_sd_scale = 0.015
+global_stage2_evaluation_particles = 320
+global_stage2_evaluation_pfilter_reps = 3
+global_stage2_n_fresh_random_starts = 1
+global_stage2_n_jittered_restarts = 1
+
+# Global start-box controls
+global_start_box_phi_low = -0.95
+global_start_box_phi_high = 0.95
+global_start_box_sigma_low = 0.05
+global_start_box_sigma_high = 2.00
+global_start_box_k_fitbit_low = 1.0
+global_start_box_k_fitbit_high = 50.0
+
+# Reconstructed reward plot controls
+reward_plot_fit_source = "global"  # "local" or "global"
+reward_plot_fig_width = 18.0
+reward_plot_fig_height = 9
+reward_plot_title_fontsize = 25
+reward_plot_axis_label_fontsize = 22
+reward_plot_tick_fontsize = 20
+reward_plot_legend_fontsize = 20
+
+# Residual-vs-missingness plot controls
+residual_plot_fit_source = "global"  # "local" or "global"
+residual_plot_fig_width = 5
+residual_plot_fig_height = 4
+```
+
+```{python}
+# | echo: false
+#fitbit_hourly = pd.read_csv("FitbitHourly.csv")
+```
+
+```{python}
+# | echo: false
+#part = fitbit_hourly[fitbit_hourly['PARTICIPANTIDENTIFIER'] == 'MDH-3531-4796']
+```
+
+```{python}
+# | echo: false
+#part.shape
+```
+
+```{python}
+#| warning: false
+#| message: false
+#| output: asis
+
+# Everything needed to run the analysis is defined in this qmd. The only data
+# file used below is FitbitHourly.csv.
+import copy
+from functools import lru_cache
+import hashlib
+import json
+from pathlib import Path
+import shelve
+from dataclasses import dataclass
+from time import perf_counter
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import display
+import jax
+import jax.numpy as jnp
+from jax.scipy.special import gammaln
+from pypomp import Pomp, ParTrans, RWSigma
+
+CSV_PATH = Path("FitbitHourly.csv")
+if not CSV_PATH.exists():
+    raise FileNotFoundError("FitbitHourly.csv must be in the same folder as this qmd.")
+
+CSV_CACHE_SIGNATURE = {
+    "csv_size_bytes": int(CSV_PATH.stat().st_size),
+    "csv_modified_ns": int(CSV_PATH.stat().st_mtime_ns),
+}
+SHELVE_CACHE_DIR = Path(shelve_cache_directory)
+SHELVE_CACHE_PATH = SHELVE_CACHE_DIR / shelve_cache_basename
+if enable_shelve_cache:
+    SHELVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if clear_shelve_cache:
+        with shelve.open(str(SHELVE_CACHE_PATH)) as cache_db:
+            cache_db.clear()
+
+CSV_COLUMNS = [
+    "PARTICIPANTIDENTIFIER",
+    "STUDY_USER_ID",
+    "time_utc",
+    "date_utc",
+    "hour_of_day_utc",
+    "fitbitSteps",
+    "fitbitHRAvg",
+    "fitbitSleepMinutes",
+    "moodScore",
+    "messageSent",
+]
+
+def normalize_timestamp_to_utc(value: str) -> pd.Timestamp:
+    """Parse a timestamp string and ensure it is UTC-aware."""
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _cache_key_default(value):
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, tuple):
+        return list(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable.")
+
+
+def build_cache_key(cache_name: str, **cache_inputs) -> str:
+    payload = {
+        "cache_name": cache_name,
+        "cache_version_token": cache_version_token,
+        "csv_signature": CSV_CACHE_SIGNATURE,
+        "cache_inputs": cache_inputs,
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=_cache_key_default).encode("utf-8")
+    return f"{cache_name}:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def get_or_compute_shelve(cache_name: str, cache_inputs: dict, compute_fn, *, prepare_for_store=None):
+    """Read a value from the shelve cache or compute and store it."""
+    cache_key = build_cache_key(cache_name, **cache_inputs)
+    if enable_shelve_cache:
+        with shelve.open(str(SHELVE_CACHE_PATH)) as cache_db:
+            if cache_key in cache_db:
+                return cache_db[cache_key]
+    value = compute_fn()
+    stored_value = prepare_for_store(value) if prepare_for_store is not None else value
+    if enable_shelve_cache:
+        with shelve.open(str(SHELVE_CACHE_PATH)) as cache_db:
+            cache_db[cache_key] = stored_value
+    return stored_value
+
+
+def display_table(
+    df: pd.DataFrame,
+    *,
+    precision: int = 3,
+    formatters: dict | None = None,
+) -> None:
+    """Render tables without row indexes in the compiled document."""
+    styled = df.style.hide(axis="index")
+    if formatters is not None:
+        styled = styled.format(formatters, na_rep="")
+    else:
+        styled = styled.format(precision=precision, na_rep="")
+    display(styled)
+
+
+def format_table_value(value, precision: int = 3) -> str:
+    """Format table values compactly for LaTeX output."""
+    if pd.isna(value):
+        return ""
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        numeric_value = float(value)
+        if np.isfinite(numeric_value) and abs(numeric_value - round(numeric_value)) < 1e-9:
+            return str(int(round(numeric_value)))
+        return f"{numeric_value:.{precision}f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def dataframe_to_latex_tabular(df: pd.DataFrame, *, precision: int = 3) -> str:
+    """Convert a dataframe into a compact LaTeX tabular block."""
+    formatted = df.copy()
+    for column in formatted.columns:
+        formatted[column] = formatted[column].map(lambda value: format_table_value(value, precision))
+    return formatted.to_latex(index=False, escape=True)
+
+
+def render_side_by_side_tables_latex(table_specs: list[dict]) -> str:
+    """Render several small tables side by side using LaTeX minipages."""
+    rendered_blocks = []
+    for spec in table_specs:
+        tabular_latex = dataframe_to_latex_tabular(spec["df"], precision=spec.get("precision", 3))
+        rendered_blocks.append(
+            "\n".join(
+                [
+                    rf"\begin{{minipage}}[t]{{{spec['width']}\linewidth}}",
+                    r"\vspace{0pt}",
+                    r"\centering",
+                    rf"\captionof{{table}}{{{spec['caption']}}}",
+                    r"\scriptsize",
+                    tabular_latex,
+                    r"\end{minipage}",
+                ]
+            )
+        )
+    return "\n\\hfill\n".join(rendered_blocks)
+
+
+@dataclass(frozen=True)
+class CovariateSpec:
+    key: str
+    label: str
+    source_col: str
+    beta_param: str
+    description: str
+    standardize: bool = True
+
+
+COVARIATE_SPECS = {
+    "trail_steps_24h": CovariateSpec(
+        key="trail_steps_24h",
+        label="Trailing 24h steps",
+        source_col="cov_trail_steps_24h",
+        beta_param="beta_steps24",
+        description="Sum of Fitbit steps over the prior 24 hours.",
+    ),
+    "trail_sleep_minutes_24h": CovariateSpec(
+        key="trail_sleep_minutes_24h",
+        label="Trailing 24h sleep minutes",
+        source_col="cov_trail_sleep_minutes_24h",
+        beta_param="beta_sleep24",
+        description="Sum of Fitbit sleep minutes over the prior 24 hours.",
+    ),
+    "trail_hr_mean_24h": CovariateSpec(
+        key="trail_hr_mean_24h",
+        label="Trailing 24h heart rate mean",
+        source_col="cov_trail_hr_mean_24h",
+        beta_param="beta_hr24",
+        description="Average Fitbit heart rate over the prior 24 hours.",
+    ),
+    "trail_mood_mean_24h": CovariateSpec(
+        key="trail_mood_mean_24h",
+        label="Trailing 24h mood mean",
+        source_col="cov_trail_mood_mean_24h",
+        beta_param="beta_mood24",
+        description="Average mood score over the prior 24 hours.",
+    ),
+    "send_lag_0_3h": CovariateSpec(
+        key="send_lag_0_3h",
+        label="Message sent 0 to 3 hours ago",
+        source_col="cov_send_lag_0_3h",
+        beta_param="eta_send_0_3h",
+        description="Indicator that the most recent message was in the current hour or previous 3 hours.",
+        standardize=False,
+    ),
+    "send_lag_4_11h": CovariateSpec(
+        key="send_lag_4_11h",
+        label="Message sent 4 to 11 hours ago",
+        source_col="cov_send_lag_4_11h",
+        beta_param="eta_send_4_11h",
+        description="Indicator that the most recent message was 4 to 11 hours ago.",
+        standardize=False,
+    ),
+    "send_lag_12_23h": CovariateSpec(
+        key="send_lag_12_23h",
+        label="Message sent 12 to 23 hours ago",
+        source_col="cov_send_lag_12_23h",
+        beta_param="eta_send_12_23h",
+        description="Indicator that the most recent message was 12 to 23 hours ago.",
+        standardize=False,
+    ),
+}
+
+
+@dataclass
+class HourlyStepModelData:
+    participant_id: str
+    study_user_id: str | None
+    hourly_frame: pd.DataFrame
+    covariate_keys: list[str]
+    covariate_params: dict[str, str]
+    covariate_standardization: dict[str, dict[str, float]]
+    decision_window_frame: pd.DataFrame
+    dropped_covariates: list[str]
+    start_utc: pd.Timestamp
+    end_utc: pd.Timestamp
+    assumed_timezone: str
+
+    @property
+    def model_covariate_columns(self) -> list[str]:
+        return [COVARIATE_SPECS[key].source_col for key in self.covariate_keys]
+
+    @property
+    def ys(self) -> pd.DataFrame:
+        return self.hourly_frame.set_index("time_index")[["fitbit_steps_obs"]]
+
+    @property
+    def covars(self) -> pd.DataFrame:
+        columns = ["baseline_log_mean"] + self.model_covariate_columns
+        return self.hourly_frame.set_index("time_index")[columns]
+
+
+@dataclass
+class StepPompFitResult:
+    initial_params: dict[str, float]
+    fitted_params: dict[str, float]
+    loglik: float
+    pomp_object: Pomp | None
+    mif_summary: pd.DataFrame
+    mif_traces: pd.DataFrame
+    pfilter_summary: pd.DataFrame
+    timing_frame: pd.DataFrame
+    runtime_breakdown: pd.DataFrame
+
+
+@dataclass
+class StepPompRunResult:
+    initial_params: dict[str, float]
+    fitted_params: dict[str, float]
+    loglik: float
+    pomp_object: Pomp | None
+    mif_summary: pd.DataFrame
+    mif_traces: pd.DataFrame
+    pfilter_summary: pd.DataFrame
+    filtered_states: pd.DataFrame
+    plot_frame: pd.DataFrame
+    reward_frame: pd.DataFrame
+    timing_frame: pd.DataFrame
+    runtime_breakdown: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class GlobalSearchStageConfig:
+    name: str
+    n_starts: int
+    keep_top: int
+    particles: int
+    mif_iterations: int
+    cooling_fraction: float
+    rw_sd_scale: float
+    evaluation_particles: int
+    evaluation_pfilter_reps: int
+    n_fresh_random_starts: int = 0
+    n_jittered_restarts: int = 0
+
+
+@dataclass
+class GlobalSearchResult:
+    best_fit: StepPompFitResult
+    best_run: StepPompRunResult
+    candidate_frame: pd.DataFrame
+    stage_summary: pd.DataFrame
+    start_box_frame: pd.DataFrame
+    total_runtime_seconds: float
+
+
+def clone_hourly_step_model_data(data: HourlyStepModelData) -> HourlyStepModelData:
+    return copy.deepcopy(data)
+
+
+def _copy_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.copy(deep=True)
+
+
+def strip_step_pomp_fit_result(result: StepPompFitResult) -> StepPompFitResult:
+    return StepPompFitResult(
+        initial_params=copy.deepcopy(result.initial_params),
+        fitted_params=copy.deepcopy(result.fitted_params),
+        loglik=float(result.loglik),
+        pomp_object=None,
+        mif_summary=_copy_frame(result.mif_summary),
+        mif_traces=_copy_frame(result.mif_traces),
+        pfilter_summary=_copy_frame(result.pfilter_summary),
+        timing_frame=_copy_frame(result.timing_frame),
+        runtime_breakdown=_copy_frame(result.runtime_breakdown),
+    )
+
+
+def strip_step_pomp_run_result(result: StepPompRunResult) -> StepPompRunResult:
+    return StepPompRunResult(
+        initial_params=copy.deepcopy(result.initial_params),
+        fitted_params=copy.deepcopy(result.fitted_params),
+        loglik=float(result.loglik),
+        pomp_object=None,
+        mif_summary=_copy_frame(result.mif_summary),
+        mif_traces=_copy_frame(result.mif_traces),
+        pfilter_summary=_copy_frame(result.pfilter_summary),
+        filtered_states=_copy_frame(result.filtered_states),
+        plot_frame=_copy_frame(result.plot_frame),
+        reward_frame=_copy_frame(result.reward_frame),
+        timing_frame=_copy_frame(result.timing_frame),
+        runtime_breakdown=_copy_frame(result.runtime_breakdown),
+    )
+
+
+def strip_global_search_result(result: GlobalSearchResult) -> GlobalSearchResult:
+    return GlobalSearchResult(
+        best_fit=strip_step_pomp_fit_result(result.best_fit),
+        best_run=strip_step_pomp_run_result(result.best_run),
+        candidate_frame=_copy_frame(result.candidate_frame),
+        stage_summary=_copy_frame(result.stage_summary),
+        start_box_frame=_copy_frame(result.start_box_frame),
+        total_runtime_seconds=float(result.total_runtime_seconds),
+    )
+
+
+analysis_start = normalize_timestamp_to_utc(analysis_start_utc_iso)
+analysis_end = normalize_timestamp_to_utc(analysis_end_utc_iso)
+covariate_keys = list(participant_covariate_keys)
+free_params = list(estimated_free_params)
+
+initial_param_overrides = {
+    "phi": float(initial_phi),
+    "sigma": float(initial_sigma),
+    "k_fitbit": float(initial_k_fitbit),
+}
+
+local_if2_controls = {
+    "particles": int(local_mle_particles),
+    "mif_iterations": int(local_mle_mif_iterations),
+    "random_seed": int(local_mle_random_seed),
+    "cooling_fraction": float(local_mle_cooling_fraction),
+    "rw_sd_scale": float(local_mle_rw_sd_scale),
+    "evaluation_particles": int(local_mle_evaluation_particles),
+    "evaluation_pfilter_reps": int(local_mle_evaluation_pfilter_reps),
+}
+
+global_search_start_box = {
+    "phi": (float(global_start_box_phi_low), float(global_start_box_phi_high)),
+    "sigma": (float(global_start_box_sigma_low), float(global_start_box_sigma_high)),
+    "k_fitbit": (float(global_start_box_k_fitbit_low), float(global_start_box_k_fitbit_high)),
+}
+
+global_search_controls = {
+    "random_seed": int(global_search_random_seed),
+    "include_current_theta_as_start": bool(global_search_include_current_theta_as_start),
+    "jitter_scale": float(global_search_jitter_scale),
+    "box_shrink_factor_per_stage": float(global_search_box_shrink_factor_per_stage),
+}
+
+global_search_stage_controls = [
+    {
+        "name": str(global_stage1_name),
+        "n_starts": int(global_stage1_n_starts),
+        "keep_top": int(global_stage1_keep_top),
+        "particles": int(global_stage1_particles),
+        "mif_iterations": int(global_stage1_mif_iterations),
+        "cooling_fraction": float(global_stage1_cooling_fraction),
+        "rw_sd_scale": float(global_stage1_rw_sd_scale),
+        "evaluation_particles": int(global_stage1_evaluation_particles),
+        "evaluation_pfilter_reps": int(global_stage1_evaluation_pfilter_reps),
+        "n_fresh_random_starts": int(global_stage1_n_fresh_random_starts),
+        "n_jittered_restarts": int(global_stage1_n_jittered_restarts),
+    },
+    {
+        "name": str(global_stage2_name),
+        "n_starts": int(global_stage2_n_starts),
+        "keep_top": int(global_stage2_keep_top),
+        "particles": int(global_stage2_particles),
+        "mif_iterations": int(global_stage2_mif_iterations),
+        "cooling_fraction": float(global_stage2_cooling_fraction),
+        "rw_sd_scale": float(global_stage2_rw_sd_scale),
+        "evaluation_particles": int(global_stage2_evaluation_particles),
+        "evaluation_pfilter_reps": int(global_stage2_evaluation_pfilter_reps),
+        "n_fresh_random_starts": int(global_stage2_n_fresh_random_starts),
+        "n_jittered_restarts": int(global_stage2_n_jittered_restarts),
+    },
+]
+
+local_controls_display = (
+    pd.DataFrame(
+        [
+            {
+                "Particles": local_if2_controls["particles"],
+                "IF2 iterations": local_if2_controls["mif_iterations"],
+                "Cooling fraction": local_if2_controls["cooling_fraction"],
+                "RW SD scale": local_if2_controls["rw_sd_scale"],
+                "Evaluation particles": local_if2_controls["evaluation_particles"],
+                "Evaluation pfilter reps": local_if2_controls["evaluation_pfilter_reps"],
+            }
+        ],
+        index=["Local"],
+    )
+    .transpose()
+    .reset_index()
+)
+local_controls_display.columns = ["Setting", "Local"]
+
+global_stage_controls_display = (
+    pd.DataFrame(
+        [
+            {
+                "Stage": stage["name"],
+                "Starts": stage["n_starts"],
+                "Keep top": stage["keep_top"],
+                "Particles": stage["particles"],
+                "IF2 iterations": stage["mif_iterations"],
+                "Cooling fraction": stage["cooling_fraction"],
+                "RW SD scale": stage["rw_sd_scale"],
+                "Evaluation particles": stage["evaluation_particles"],
+                "Evaluation pfilter reps": stage["evaluation_pfilter_reps"],
+                "Fresh random starts": stage["n_fresh_random_starts"],
+                "Jittered restarts": stage["n_jittered_restarts"],
+            }
+            for stage in global_search_stage_controls
+        ]
+    )
+    .set_index("Stage")
+    .transpose()
+    .reset_index()
+    .rename(columns={"index": "Setting"})
+)
+global_start_box_display = pd.DataFrame(
+    [
+        {
+            "Parameter": name,
+            "Low": bounds[0],
+            "High": bounds[1],
+        }
+        for name, bounds in global_search_start_box.items()
+    ]
+)
+
+print(
+    render_side_by_side_tables_latex(
+        [
+            {
+                "caption": "Local IF2 controls",
+                "width": 0.27,
+                "df": local_controls_display,
+                "precision": 3,
+            },
+            {
+                "caption": "Global IF2 stage controls",
+                "width": 0.43,
+                "df": global_stage_controls_display,
+                "precision": 3,
+            },
+            {
+                "caption": "Global start box",
+                "width": 0.24,
+                "df": global_start_box_display,
+                "precision": 3,
+            },
+        ]
+    )
+)
+```
+
+For participant MDH-3531-4796:
+
+```{python}
+#| warning: false
+#| message: false
+
+@lru_cache(maxsize=8)
+def load_participant_hourly_from_csv(
+    participant_id: str,
+    start_iso: str,
+    end_iso: str,
+    lookback_hours: int = 48,
+) -> pd.DataFrame:
+    """Load one participant from the CSV with a short lookback window."""
+
+    start_utc = pd.Timestamp(start_iso).tz_convert("UTC") - pd.Timedelta(hours=lookback_hours)
+    end_utc = pd.Timestamp(end_iso).tz_convert("UTC")
+    chunks = []
+
+    for chunk in pd.read_csv(CSV_PATH, usecols=CSV_COLUMNS, chunksize=250_000):
+        chunk = chunk.loc[chunk["PARTICIPANTIDENTIFIER"] == participant_id].copy()
+        if chunk.empty:
+            continue
+
+        chunk["time_utc"] = pd.to_datetime(chunk["time_utc"], utc=True, errors="coerce")
+        chunk = chunk.loc[chunk["time_utc"].between(start_utc, end_utc, inclusive="both")]
+        if chunk.empty:
+            continue
+
+        chunk["date_utc"] = chunk["time_utc"].dt.date
+        chunk["hour_of_day_utc"] = chunk["time_utc"].dt.hour
+        chunks.append(chunk)
+
+    if not chunks:
+        raise ValueError(f"No hourly rows were found for {participant_id}.")
+
+    return pd.concat(chunks, ignore_index=True).sort_values("time_utc").reset_index(drop=True)
+
+
+def build_baseline_log_mean(
+    step_proxy: pd.Series,
+    local_hour: pd.Series,
+    local_dayofweek: pd.Series,
+) -> pd.Series:
+    """Empirical hour-of-day and weekday mean structure on the log scale."""
+
+    log_proxy = np.log(step_proxy.clip(lower=0.0) + 1.0)
+    valid = log_proxy.replace([np.inf, -np.inf], np.nan).dropna()
+    global_mean = float(valid.mean()) if not valid.empty else float(np.log(1.0))
+
+    hour_effect = (
+        log_proxy.groupby(local_hour).mean().reindex(range(24), fill_value=np.nan).astype(float) - global_mean
+    )
+    hour_effect = hour_effect.fillna(0.0)
+    hour_effect = hour_effect - float(hour_effect.mean())
+
+    hour_lookup = hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
+    residual = log_proxy.to_numpy(dtype=float) - (global_mean + hour_lookup)
+    residual_series = pd.Series(residual, index=step_proxy.index)
+
+    dow_effect = residual_series.groupby(local_dayofweek).mean().reindex(range(7), fill_value=np.nan).astype(float)
+    dow_effect = dow_effect.fillna(0.0)
+    dow_effect = dow_effect - float(dow_effect.mean())
+
+    baseline = (
+        global_mean
+        + hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
+        + dow_effect.reindex(local_dayofweek.astype(int)).to_numpy(dtype=float)
+    )
+    return pd.Series(baseline, index=step_proxy.index, dtype="float64")
+
+
+def add_hourly_covariates(frame: pd.DataFrame) -> pd.DataFrame:
+    """Create trailing summaries and message-lag indicators from the CSV."""
+
+    result = frame.copy()
+    step_proxy = pd.to_numeric(result["fitbitSteps"], errors="coerce").clip(lower=0.0)
+    sleep_minutes = pd.to_numeric(result.get("fitbitSleepMinutes"), errors="coerce")
+    hr_avg = pd.to_numeric(result.get("fitbitHRAvg"), errors="coerce")
+    mood_score = pd.to_numeric(result.get("moodScore"), errors="coerce")
+
+    hr_fill = float(hr_avg.dropna().median()) if hr_avg.notna().any() else 0.0
+    mood_fill = float(mood_score.dropna().mean()) if mood_score.notna().any() else 0.0
+
+    result["cov_trail_steps_24h"] = step_proxy.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
+    result["cov_trail_sleep_minutes_24h"] = sleep_minutes.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
+    result["cov_trail_hr_mean_24h"] = hr_avg.fillna(hr_fill).shift(1).rolling(24, min_periods=1).mean()
+    result["cov_trail_mood_mean_24h"] = mood_score.fillna(mood_fill).shift(1).rolling(24, min_periods=1).mean()
+
+    send_series = pd.to_numeric(result.get("messageSent", 0), errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)
+    hours_since_send = np.full(len(result), np.inf, dtype=float)
+    last_send_index = None
+    for index, sent_flag in enumerate(send_series.to_numpy(dtype=float)):
+        if sent_flag >= 0.5:
+            last_send_index = index
+            hours_since_send[index] = 0.0
+        elif last_send_index is not None:
+            hours_since_send[index] = float(index - last_send_index)
+
+    result["cov_send_lag_0_3h"] = ((hours_since_send >= 0) & (hours_since_send <= 3)).astype(float)
+    result["cov_send_lag_4_11h"] = ((hours_since_send >= 4) & (hours_since_send <= 11)).astype(float)
+    result["cov_send_lag_12_23h"] = ((hours_since_send >= 12) & (hours_since_send <= 23)).astype(float)
+    result["baseline_log_mean"] = build_baseline_log_mean(
+        step_proxy,
+        result["local_hour"],
+        result["local_dayofweek"],
+    )
+    return result
+
+
+def build_decision_windows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Identify local 3pm decision times and their following 24-hour windows."""
+
+    decision_rows = frame.loc[frame["local_hour"] == 15].copy()
+    if decision_rows.empty:
+        return pd.DataFrame(
+            columns=[
+                "decision_id",
+                "decision_time_utc",
+                "decision_local_time",
+                "decision_local_date",
+                "hours_in_window",
+                "complete_window",
+                "fitbit_observed_hours",
+                "fitbit_coverage_fraction",
+                "reward_window_status",
+                "window_start_position",
+                "window_end_position",
+            ]
+        )
+
+    rows = []
+    for decision_id, (_, row) in enumerate(decision_rows.iterrows(), start=1):
+        start_pos = int(row.name)
+        window = frame.iloc[start_pos : start_pos + 24].copy()
+        hours_in_window = len(window)
+        complete_window = hours_in_window == 24
+        fitbit_observed = int(window["fitbit_observed"].sum())
+        fitbit_coverage_fraction = fitbit_observed / hours_in_window if hours_in_window > 0 else 0.0
+
+        if not complete_window:
+            status = "truncated_range"
+        elif fitbit_observed >= 24:
+            status = "fully_observed"
+        elif fitbit_coverage_fraction >= 0.5:
+            status = "partially_observed"
+        else:
+            status = "heavily_imputed"
+
+        rows.append(
+            {
+                "decision_id": decision_id,
+                "decision_time_utc": row["time_utc"],
+                "decision_local_time": row["local_time"],
+                "decision_local_date": row["local_date"],
+                "hours_in_window": hours_in_window,
+                "complete_window": bool(complete_window),
+                "fitbit_observed_hours": fitbit_observed,
+                "fitbit_coverage_fraction": fitbit_coverage_fraction,
+                "reward_window_status": status,
+                "window_start_position": start_pos,
+                "window_end_position": start_pos + hours_in_window - 1,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def prepare_hourly_model_data(
+    hourly_frame: pd.DataFrame,
+    *,
+    participant_id: str,
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
+    covariate_keys: list[str],
+    assumed_timezone: str,
+) -> HourlyStepModelData:
+    """Prepare the participant-specific data object used by the POMP model."""
+
+    if hourly_frame.empty:
+        raise ValueError("Selected participant/date range produced no hourly rows.")
+
+    working = hourly_frame.copy()
+    working["time_utc"] = pd.to_datetime(working["time_utc"], utc=True, errors="coerce")
+    working = working.dropna(subset=["time_utc"]).sort_values("time_utc").reset_index(drop=True)
+
+    study_user_id = None
+    if "STUDY_USER_ID" in working.columns:
+        values = working["STUDY_USER_ID"].dropna().astype(str)
+        study_user_id = values.iloc[0] if not values.empty else None
+
+    working["local_time"] = working["time_utc"].dt.tz_convert(assumed_timezone)
+    working["local_date"] = working["local_time"].dt.date
+    working["local_hour"] = working["local_time"].dt.hour.astype(int)
+    working["local_dayofweek"] = working["local_time"].dt.dayofweek.astype(int)
+    working = add_hourly_covariates(working)
+
+    selected = working.loc[(working["time_utc"] >= start_utc) & (working["time_utc"] <= end_utc)].copy()
+    if selected.empty:
+        raise ValueError("No hourly rows fall inside the requested UTC range.")
+
+    selected["fitbit_steps_obs"] = pd.to_numeric(selected["fitbitSteps"], errors="coerce")
+    selected["fitbit_observed"] = selected["fitbit_steps_obs"].notna().astype(int)
+    if int(selected["fitbit_observed"].sum()) == 0:
+        raise ValueError("No observed Fitbit step data are available in the selected range.")
+
+    normalized_covariates = []
+    dropped_covariates = []
+    covariate_standardization = {}
+    covariate_params = {}
+
+    for key in covariate_keys:
+        if key not in COVARIATE_SPECS:
+            continue
+        spec = COVARIATE_SPECS[key]
+        values = pd.to_numeric(selected[spec.source_col], errors="coerce")
+        if spec.standardize:
+            mean = float(values.mean()) if values.notna().any() else 0.0
+            std = float(values.std(ddof=0)) if values.notna().any() else 0.0
+            if np.isclose(std, 0.0):
+                standardized = values.fillna(mean) - mean
+            else:
+                standardized = (values.fillna(mean) - mean) / std
+            if float(np.nanmax(np.abs(standardized.to_numpy(dtype=float)))) <= 1e-12:
+                dropped_covariates.append(key)
+                continue
+            selected[spec.source_col] = standardized.astype(float)
+            covariate_standardization[key] = {"mean": mean, "std": std}
+        else:
+            binary_values = values.fillna(0.0).astype(float)
+            if float(binary_values.max()) <= 0.0:
+                dropped_covariates.append(key)
+                continue
+            selected[spec.source_col] = binary_values
+            covariate_standardization[key] = {"mean": 0.0, "std": 1.0}
+
+        covariate_params[key] = spec.beta_param
+        normalized_covariates.append(key)
+
+    selected = selected.sort_values("time_utc").reset_index(drop=True)
+    selected["time_index"] = np.arange(1, len(selected) + 1, dtype=float)
+    decision_window_frame = build_decision_windows(selected)
+
+    return HourlyStepModelData(
+        participant_id=participant_id,
+        study_user_id=study_user_id,
+        hourly_frame=selected,
+        covariate_keys=normalized_covariates,
+        covariate_params=covariate_params,
+        covariate_standardization=covariate_standardization,
+        decision_window_frame=decision_window_frame,
+        dropped_covariates=dropped_covariates,
+        start_utc=start_utc,
+        end_utc=end_utc,
+        assumed_timezone=assumed_timezone,
+    )
+
+
+def build_step_pomp_default_params(hourly_data: HourlyStepModelData) -> dict[str, float]:
+    defaults = {
+        "phi": 0.75,
+        "sigma": 0.30,
+        "k_fitbit": 10,
+    }
+    for cov_key in hourly_data.covariate_keys:
+        defaults[COVARIATE_SPECS[cov_key].beta_param] = 0.0
+    return defaults
+
+
+def get_cached_participant_hourly(
+    participant_id: str,
+    *,
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
+    lookback_hours: int,
+) -> pd.DataFrame:
+    cache_inputs = {
+        "participant_id": participant_id,
+        "analysis_start_utc_iso": start_utc.isoformat(),
+        "analysis_end_utc_iso": end_utc.isoformat(),
+        "lookback_hours": int(lookback_hours),
+    }
+    return get_or_compute_shelve(
+        "participant_hourly_frame",
+        cache_inputs,
+        lambda: load_participant_hourly_from_csv(
+            participant_id,
+            start_utc.isoformat(),
+            end_utc.isoformat(),
+            lookback_hours=lookback_hours,
+        ),
+        prepare_for_store=lambda frame: frame.copy(deep=True),
+    )
+
+
+def get_cached_hourly_model_data(
+    participant_hourly: pd.DataFrame,
+    *,
+    participant_id: str,
+    start_utc: pd.Timestamp,
+    end_utc: pd.Timestamp,
+    covariate_keys: list[str],
+    assumed_timezone: str,
+) -> HourlyStepModelData:
+    cache_inputs = {
+        "participant_id": participant_id,
+        "analysis_start_utc_iso": start_utc.isoformat(),
+        "analysis_end_utc_iso": end_utc.isoformat(),
+        "covariate_keys": list(covariate_keys),
+        "assumed_timezone": assumed_timezone,
+    }
+    return get_or_compute_shelve(
+        "participant_hourly_model_data",
+        cache_inputs,
+        lambda: prepare_hourly_model_data(
+            participant_hourly,
+            participant_id=participant_id,
+            start_utc=start_utc,
+            end_utc=end_utc,
+            covariate_keys=covariate_keys,
+            assumed_timezone=assumed_timezone,
+        ),
+        prepare_for_store=clone_hourly_step_model_data,
+    )
+
+participant_hourly = get_cached_participant_hourly(
+    participant_id,
+    start_utc=analysis_start,
+    end_utc=analysis_end,
+    lookback_hours=participant_data_lookback_hours,
+)
+
+hourly_data = get_cached_hourly_model_data(
+    participant_hourly,
+    participant_id=participant_id,
+    start_utc=analysis_start,
+    end_utc=analysis_end,
+    covariate_keys=covariate_keys,
+    assumed_timezone=assumed_local_timezone,
+)
+
+initial_params = build_step_pomp_default_params(hourly_data)
+for param_name, param_value in initial_param_overrides.items():
+    if param_name in initial_params:
+        initial_params[param_name] = param_value
+
+active_free_params = [param for param in free_params if param in initial_params]
+
+fitbit_missingness_percentage = 100.0 * (
+    1.0 - float(hourly_data.hourly_frame["fitbit_observed"].mean())
+)
+
+participant_summary = pd.DataFrame(
+    [
+        {
+            "Participant ID": participant_id,
+            "Complete 24 hour reward windows": int(hourly_data.decision_window_frame["complete_window"].sum()),
+            "Fitbit missingness percentage": f"{fitbit_missingness_percentage:.2f}%",
+        }
+    ]
+)
+
+display_table(participant_summary, precision=2)
+```
+
+MLE is:
+
+```{python}
+#| warning: false
+#| message: false
+
+def _build_theta0(initial_params: dict[str, float], covariate_keys: list[str]) -> dict[str, float]:
+    theta0 = {
+        "phi": float(initial_params["phi"]),
+        "sigma": float(initial_params["sigma"]),
+        "k_fitbit": float(initial_params["k_fitbit"]),
+    }
+    for cov_key in covariate_keys:
+        beta_param = COVARIATE_SPECS[cov_key].beta_param
+        theta0[beta_param] = float(initial_params.get(beta_param, 0.0))
+    return theta0
+
+
+def _softplus(value: jax.Array) -> jax.Array:
+    return jnp.log1p(jnp.exp(-jnp.abs(value))) + jnp.maximum(value, 0)
+
+
+def _inv_softplus(value: jax.Array) -> jax.Array:
+    value = jnp.maximum(value, 1e-8)
+    return jnp.where(value > 20.0, value, jnp.log(jnp.expm1(value)))
+
+
+def _build_par_trans(theta0: dict[str, float]) -> ParTrans:
+    positive_names = [name for name in theta0 if name in {"sigma", "k_fitbit"}]
+
+    def to_est(theta: dict[str, jax.Array]) -> dict[str, jax.Array]:
+        result = dict(theta)
+        for name in positive_names:
+            result[name] = _inv_softplus(result[name])
+        scaled = jnp.clip((result["phi"] + 1.0) / 2.0, 1e-6, 1.0 - 1e-6)
+        result["phi"] = jnp.log(scaled / (1.0 - scaled))
+        return result
+
+    def from_est(theta: dict[str, jax.Array]) -> dict[str, jax.Array]:
+        result = dict(theta)
+        for name in positive_names:
+            result[name] = _softplus(result[name]) + 1e-6
+        scaled = 1.0 / (1.0 + jnp.exp(-result["phi"]))
+        result["phi"] = 2.0 * scaled - 1.0
+        return result
+
+    return ParTrans(to_est=to_est, from_est=from_est)
+
+
+def _poisson_sample(key: jax.Array, mean: jax.Array) -> jax.Array:
+    mean = jnp.maximum(mean, 1e-8)
+    return jax.random.poisson(key, mean)
+
+
+def _nb_sample_mean_disp(key: jax.Array, mean: jax.Array, disp: jax.Array) -> jax.Array:
+    mean = jnp.maximum(mean, 1e-8)
+    disp = jnp.maximum(disp, 1e-6)
+    key_gamma, key_poisson = jax.random.split(key)
+    rate = jax.random.gamma(key_gamma, disp) * (mean / disp)
+    return jax.random.poisson(key_poisson, rate)
+
+
+def _nb_logpmf_mean_disp(obs: jax.Array, mean: jax.Array, disp: jax.Array) -> jax.Array:
+    obs = jnp.maximum(jnp.round(obs), 0.0)
+    mean = jnp.maximum(mean, 1e-8)
+    disp = jnp.maximum(disp, 1e-6)
+    return (
+        gammaln(obs + disp)
+        - gammaln(disp)
+        - gammaln(obs + 1.0)
+        + disp * (jnp.log(disp) - jnp.log(disp + mean))
+        + obs * (jnp.log(mean) - jnp.log(disp + mean))
+    )
+
+
+def _build_pomp_object(data: HourlyStepModelData, theta0: dict[str, float]) -> Pomp:
+    covariate_param_pairs = [
+        (COVARIATE_SPECS[key].source_col, COVARIATE_SPECS[key].beta_param)
+        for key in data.covariate_keys
+    ]
+    par_trans = _build_par_trans(theta0)
+
+    def rinit(theta_, key, covars, t0):
+        return {"x": 0.0, "N": 1.0}
+
+    def rproc(X_, theta_, key, covars, t, dt):
+        key_x, key_n = jax.random.split(key)
+        x_next = theta_["phi"] * X_["x"] + theta_["sigma"] * jax.random.normal(key_x)
+
+        mean_term = covars.get("baseline_log_mean", 0.0)
+        for covar_name, param_name in covariate_param_pairs:
+            mean_term = mean_term + theta_[param_name] * covars.get(covar_name, 0.0)
+
+        log_lambda = jnp.clip(mean_term + x_next, -6.0, 12.0)
+        lam = jnp.exp(log_lambda)
+        latent_count = _poisson_sample(key_n, lam)
+        return {"x": x_next, "N": latent_count}
+
+    def dmeas(Y_, X_, theta_, covars, t):
+        observed = Y_["fitbit_steps_obs"]
+        mask = ~jnp.isnan(observed)
+        return jnp.where(mask, _nb_logpmf_mean_disp(observed, X_["N"], theta_["k_fitbit"]), 0.0)
+
+    def rmeas(X_, theta_, key, covars, t):
+        draw = _nb_sample_mean_disp(key, X_["N"], theta_["k_fitbit"])
+        return jnp.array([draw])
+
+    ys = data.ys.copy()
+    covars = data.covars.copy()
+    ys.index = ys.index.astype(float)
+    covars.index = covars.index.astype(float)
+
+    return Pomp(
+        ys=ys,
+        theta=theta0,
+        statenames=["x", "N"],
+        t0=0.0,
+        rinit=rinit,
+        rproc=rproc,
+        dmeas=dmeas,
+        rmeas=rmeas,
+        par_trans=par_trans,
+        covars=covars,
+        nstep=1,
+        ydim=1,
+    )
+
+
+def _coerce_param_row(row: pd.Series) -> dict[str, float]:
+    result = {}
+    for key, value in row.items():
+        if key in {"logLik", "se"}:
+            continue
+        try:
+            result[str(key)] = float(value)
+        except Exception:
+            continue
+    return result
+
+
+def _extract_filtered_states(pomp: Pomp, data: HourlyStepModelData) -> pd.DataFrame:
+    result = pomp.results_history.last()
+    filter_mean = getattr(result, "filter_mean", None)
+    if filter_mean is None:
+        raise ValueError("Filtered means were not stored by the particle filter.")
+
+    arr = np.asarray(filter_mean)
+    state_mean = np.nanmean(arr[0], axis=0)
+    state_q10 = np.nanquantile(arr[0], 0.1, axis=0)
+    state_q90 = np.nanquantile(arr[0], 0.9, axis=0)
+
+    frame = data.hourly_frame[
+        ["time_index", "time_utc", "local_time", "local_date", "local_hour", "local_dayofweek"]
+    ].copy()
+    frame["x_filtered_mean"] = state_mean[:, 0]
+    frame["N_filtered_mean"] = state_mean[:, 1]
+    frame["x_filter_rep_q10"] = state_q10[:, 0]
+    frame["x_filter_rep_q90"] = state_q90[:, 0]
+    frame["N_filter_rep_q10"] = state_q10[:, 1]
+    frame["N_filter_rep_q90"] = state_q90[:, 1]
+    return frame
+
+
+def _build_plot_frame(
+    data: HourlyStepModelData,
+    filtered_states: pd.DataFrame,
+    fitted_params: dict[str, float],
+) -> pd.DataFrame:
+    frame = data.hourly_frame.copy()
+    frame = frame.merge(
+        filtered_states,
+        on=["time_index", "time_utc", "local_time", "local_date", "local_hour", "local_dayofweek"],
+        how="left",
+    )
+    frame["latent_fitbit_scale_steps"] = frame["N_filtered_mean"]
+
+    linear_adjustment = np.zeros(len(frame), dtype=float)
+    for cov_key in data.covariate_keys:
+        spec = COVARIATE_SPECS[cov_key]
+        linear_adjustment = linear_adjustment + float(fitted_params.get(spec.beta_param, 0.0)) * pd.to_numeric(
+            frame[spec.source_col], errors="coerce"
+        ).fillna(0.0).to_numpy(dtype=float)
+
+    frame["model_log_lambda"] = (
+        pd.to_numeric(frame["baseline_log_mean"], errors="coerce").fillna(0.0)
+        + pd.Series(linear_adjustment, index=frame.index)
+        + pd.to_numeric(frame["x_filtered_mean"], errors="coerce").fillna(0.0)
+    )
+    frame["model_lambda"] = np.exp(np.clip(frame["model_log_lambda"], -6.0, 12.0))
+    frame["fitbit_steps_obs_fitted"] = frame["N_filtered_mean"]
+    frame["fitbit_hour_status"] = np.where(frame["fitbit_observed"].astype(int) == 1, "observed", "missing")
+    return frame
+
+
+def _build_reward_frame(data: HourlyStepModelData, plot_frame: pd.DataFrame) -> pd.DataFrame:
+    if data.decision_window_frame.empty:
+        return data.decision_window_frame.copy()
+
+    rows = []
+    for _, reward_row in data.decision_window_frame.iterrows():
+        start_pos = int(reward_row["window_start_position"])
+        end_pos = int(reward_row["window_end_position"])
+        window = plot_frame.iloc[start_pos : end_pos + 1].copy()
+
+        rows.append(
+            {
+                **reward_row.to_dict(),
+                "latent_reward_24h": float(pd.to_numeric(window["N_filtered_mean"], errors="coerce").sum(min_count=1)),
+                "fitbit_observed_reward_24h": float(pd.to_numeric(window["fitbit_steps_obs"], errors="coerce").sum(min_count=1)),
+                "fitbit_fitted_reward_24h": float(pd.to_numeric(window["fitbit_steps_obs_fitted"], errors="coerce").sum(min_count=1)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def run_step_pomp_fit(
+    data: HourlyStepModelData,
+    *,
+    initial_params: dict[str, float],
+    free_params: list[str] | None,
+    particles: int,
+    mif_iterations: int,
+    random_seed: int,
+    cooling_fraction: float,
+    rw_sd_scale: float,
+    evaluation_particles: int | None = None,
+    evaluation_pfilter_reps: int = 1,
+) -> StepPompFitResult:
+    fit_start = perf_counter()
+    theta0 = _build_theta0(initial_params, data.covariate_keys)
+    pomp = _build_pomp_object(data, theta0)
+    free_param_names = theta0.keys() if free_params is None else [name for name in free_params if name in theta0]
+
+    if free_param_names and int(mif_iterations) > 0:
+        rw_sd = RWSigma(
+            {
+                name: (float(rw_sd_scale) if name in free_param_names else 0.0)
+                for name in theta0
+            }
+        )
+        mif_key = jax.random.key(int(random_seed))
+        pomp.mif(
+            J=int(particles),
+            M=int(mif_iterations),
+            rw_sd=rw_sd,
+            a=float(cooling_fraction),
+            key=mif_key,
+        )
+        mif_summary = pomp.results(index=-1).copy()
+        mif_traces = pomp.traces().copy()
+    else:
+        mif_summary = pd.DataFrame([{"method": "fixed_theta", **theta0}])
+        mif_traces = pd.DataFrame()
+
+    eval_particles = int(evaluation_particles or particles)
+    eval_reps = max(1, int(evaluation_pfilter_reps))
+    pfilter_key = jax.random.key(int(random_seed) + 1)
+    pomp.pfilter(
+        J=eval_particles,
+        reps=eval_reps,
+        key=pfilter_key,
+        filter_mean=True,
+    )
+
+    pfilter_summary = pomp.results(index=-1).copy()
+    timing_frame = pomp.time().copy()
+    fitted_params = _coerce_param_row(pfilter_summary.iloc[0] if not pfilter_summary.empty else pd.Series(theta0))
+    for name, value in theta0.items():
+        if name not in free_param_names:
+            fitted_params[name] = float(value)
+
+    loglik = (
+        float(pfilter_summary["logLik"].iloc[0])
+        if not pfilter_summary.empty and "logLik" in pfilter_summary.columns
+        else float("nan")
+    )
+    runtime_breakdown = pd.DataFrame([{"step": "fit_total", "seconds": float(perf_counter() - fit_start)}])
+
+    return StepPompFitResult(
+        initial_params={name: float(value) for name, value in theta0.items()},
+        fitted_params=fitted_params,
+        loglik=loglik,
+        pomp_object=pomp,
+        mif_summary=mif_summary,
+        mif_traces=mif_traces,
+        pfilter_summary=pfilter_summary,
+        timing_frame=timing_frame,
+        runtime_breakdown=runtime_breakdown,
+    )
+
+
+def run_step_pomp_if2(
+    data: HourlyStepModelData,
+    *,
+    initial_params: dict[str, float],
+    free_params: list[str] | None,
+    particles: int,
+    mif_iterations: int,
+    random_seed: int,
+    cooling_fraction: float,
+    rw_sd_scale: float,
+    evaluation_particles: int | None = None,
+    evaluation_pfilter_reps: int = 1,
+) -> StepPompRunResult:
+    fit_result = run_step_pomp_fit(
+        data,
+        initial_params=initial_params,
+        free_params=free_params,
+        particles=particles,
+        mif_iterations=mif_iterations,
+        random_seed=random_seed,
+        cooling_fraction=cooling_fraction,
+        rw_sd_scale=rw_sd_scale,
+        evaluation_particles=evaluation_particles,
+        evaluation_pfilter_reps=evaluation_pfilter_reps,
+    )
+
+    filtered_states = _extract_filtered_states(fit_result.pomp_object, data)
+    plot_frame = _build_plot_frame(data, filtered_states, fit_result.fitted_params)
+    reward_frame = _build_reward_frame(data, plot_frame)
+
+    return StepPompRunResult(
+        initial_params=fit_result.initial_params,
+        fitted_params=fit_result.fitted_params,
+        loglik=fit_result.loglik,
+        pomp_object=fit_result.pomp_object,
+        mif_summary=fit_result.mif_summary,
+        mif_traces=fit_result.mif_traces,
+        pfilter_summary=fit_result.pfilter_summary,
+        filtered_states=filtered_states,
+        plot_frame=plot_frame,
+        reward_frame=reward_frame,
+        timing_frame=fit_result.timing_frame,
+        runtime_breakdown=fit_result.runtime_breakdown,
+    )
+
+
+def get_cached_local_step_pomp_result(
+    data: HourlyStepModelData,
+    *,
+    participant_id: str,
+    analysis_start: pd.Timestamp,
+    analysis_end: pd.Timestamp,
+    initial_params: dict[str, float],
+    free_params: list[str] | None,
+    local_if2_controls: dict[str, float],
+) -> StepPompRunResult:
+    cache_inputs = {
+        "participant_id": participant_id,
+        "analysis_start_utc_iso": analysis_start.isoformat(),
+        "analysis_end_utc_iso": analysis_end.isoformat(),
+        "model_covariate_keys": list(data.covariate_keys),
+        "initial_params": copy.deepcopy(initial_params),
+        "free_params": list(free_params or []),
+        "local_if2_controls": copy.deepcopy(local_if2_controls),
+    }
+    return get_or_compute_shelve(
+        "local_step_pomp_result",
+        cache_inputs,
+        lambda: run_step_pomp_if2(
+            data,
+            initial_params=initial_params,
+            free_params=free_params,
+            particles=local_if2_controls["particles"],
+            mif_iterations=local_if2_controls["mif_iterations"],
+            random_seed=local_if2_controls["random_seed"],
+            cooling_fraction=local_if2_controls["cooling_fraction"],
+            rw_sd_scale=local_if2_controls["rw_sd_scale"],
+            evaluation_particles=local_if2_controls["evaluation_particles"],
+            evaluation_pfilter_reps=local_if2_controls["evaluation_pfilter_reps"],
+        ),
+        prepare_for_store=strip_step_pomp_run_result,
+    )
+
+
+local_step_pomp_result = get_cached_local_step_pomp_result(
+    hourly_data,
+    participant_id=participant_id,
+    analysis_start=analysis_start,
+    analysis_end=analysis_end,
+    initial_params=initial_params,
+    free_params=active_free_params,
+    local_if2_controls=local_if2_controls,
+)
+
+local_mle_summary = pd.DataFrame(
+    [
+        {
+            "Search": "Local MLE",
+            "Participant ID": participant_id,
+            "LogLik": local_step_pomp_result.loglik,
+            **local_step_pomp_result.fitted_params,
+        }
+    ]
+).round(3)
+
+display_table(local_mle_summary, precision=3)
+```
+
+Global MLE search:
+
+```{python}
+#| warning: false
+#| message: false
+
+def _coerce_free_params(free_params: list[str] | None, initial_params: dict[str, float]) -> list[str]:
+    if free_params is None:
+        return list(initial_params.keys())
+    return [name for name in free_params if name in initial_params]
+
+
+def _coerce_start_box(
+    start_box: dict[str, tuple[float, float]] | None,
+    free_params: list[str],
+    initial_params: dict[str, float],
+) -> dict[str, tuple[float, float]]:
+    result = {}
+    start_box = start_box or {}
+    for name in free_params:
+        raw_bounds = start_box.get(name)
+        if raw_bounds is None:
+            value = float(initial_params[name])
+            width = max(abs(value) * 0.25, 0.10)
+            result[name] = (value - width, value + width)
+            continue
+        low, high = float(raw_bounds[0]), float(raw_bounds[1])
+        if high < low:
+            low, high = high, low
+        if np.isclose(low, high):
+            eps = max(abs(low) * 0.01, 1e-3)
+            low, high = low - eps, high + eps
+        result[name] = (low, high)
+    return result
+
+
+def _build_start_box_frame(start_box: dict[str, tuple[float, float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "parameter": name,
+                "start_low": bounds[0],
+                "start_high": bounds[1],
+                "start_width": bounds[1] - bounds[0],
+            }
+            for name, bounds in sorted(start_box.items())
+        ]
+    )
+
+
+def _stage_bounds(
+    base_start_box: dict[str, tuple[float, float]],
+    center_params: dict[str, float],
+    *,
+    stage_index: int,
+    box_shrink_factor_per_stage: float,
+) -> dict[str, tuple[float, float]]:
+    shrink_factor = float(np.clip(box_shrink_factor_per_stage, 1e-3, 1.0)) ** int(max(stage_index, 0))
+    result = {}
+    for name, (base_low, base_high) in base_start_box.items():
+        if shrink_factor >= 0.999999:
+            result[name] = (float(base_low), float(base_high))
+            continue
+        width = float(base_high - base_low) * shrink_factor
+        center = float(np.clip(center_params.get(name, 0.5 * (base_low + base_high)), base_low, base_high))
+        low = max(float(base_low), center - 0.5 * width)
+        high = min(float(base_high), center + 0.5 * width)
+        if np.isclose(low, high):
+            eps = max(abs(center) * 0.01, 1e-3)
+            low = max(float(base_low), center - eps)
+            high = min(float(base_high), center + eps)
+        result[name] = (float(low), float(high))
+    return result
+
+
+def _sample_uniform_start(
+    template_params: dict[str, float],
+    free_params: list[str],
+    bounds: dict[str, tuple[float, float]],
+    rng: np.random.Generator,
+) -> dict[str, float]:
+    params = {name: float(value) for name, value in template_params.items()}
+    for name in free_params:
+        low, high = bounds[name]
+        params[name] = float(rng.uniform(low, high))
+    return params
+
+
+def _sample_jittered_start(
+    center_params: dict[str, float],
+    template_params: dict[str, float],
+    free_params: list[str],
+    bounds: dict[str, tuple[float, float]],
+    rng: np.random.Generator,
+    *,
+    jitter_scale: float,
+) -> dict[str, float]:
+    params = {name: float(value) for name, value in template_params.items()}
+    for name in free_params:
+        base_value = float(center_params.get(name, template_params[name]))
+        low, high = bounds[name]
+        width = max(float(high - low), 1e-6)
+        jittered = base_value + rng.normal(scale=float(max(jitter_scale, 1e-6)) * width)
+        params[name] = float(np.clip(jittered, low, high))
+    return params
+
+
+def _build_stage_candidates(
+    *,
+    stage_index: int,
+    stage: GlobalSearchStageConfig,
+    template_params: dict[str, float],
+    free_params: list[str],
+    bounds: dict[str, tuple[float, float]],
+    previous_survivors: list[dict[str, object]],
+    include_current_theta_as_start: bool,
+    jitter_scale: float,
+    rng: np.random.Generator,
+) -> list[dict[str, object]]:
+    n_starts = int(max(stage.n_starts, 1))
+    candidates = []
+
+    if stage_index == 0:
+        if include_current_theta_as_start:
+            candidates.append(
+                {
+                    "origin": "current_theta",
+                    "parent_candidate_id": None,
+                    "params": {name: float(value) for name, value in template_params.items()},
+                }
+            )
+        while len(candidates) < n_starts:
+            candidates.append(
+                {
+                    "origin": "random_box",
+                    "parent_candidate_id": None,
+                    "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+                }
+            )
+        return candidates
+
+    survivors = previous_survivors[:n_starts]
+    for survivor in survivors:
+        candidates.append(
+            {
+                "origin": "survivor",
+                "parent_candidate_id": survivor["candidate_id"],
+                "params": dict(survivor["fitted_params"]),
+            }
+        )
+
+    remaining = n_starts - len(candidates)
+    jitter_budget = min(int(max(stage.n_jittered_restarts, 0)), remaining)
+    for _ in range(jitter_budget):
+        anchor = previous_survivors[int(rng.integers(0, len(previous_survivors)))]
+        candidates.append(
+            {
+                "origin": "jittered_survivor",
+                "parent_candidate_id": anchor["candidate_id"],
+                "params": _sample_jittered_start(
+                    anchor["fitted_params"],
+                    template_params,
+                    free_params,
+                    bounds,
+                    rng,
+                    jitter_scale=jitter_scale,
+                ),
+            }
+        )
+
+    remaining = n_starts - len(candidates)
+    fresh_budget = min(int(max(stage.n_fresh_random_starts, 0)), remaining)
+    for _ in range(fresh_budget):
+        candidates.append(
+            {
+                "origin": "fresh_random",
+                "parent_candidate_id": None,
+                "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+            }
+        )
+
+    while len(candidates) < n_starts:
+        candidates.append(
+            {
+                "origin": "random_backfill",
+                "parent_candidate_id": None,
+                "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+            }
+        )
+
+    return candidates
+
+
+def run_multistage_step_pomp_search(
+    data: HourlyStepModelData,
+    *,
+    initial_params: dict[str, float],
+    free_params: list[str] | None,
+    start_box: dict[str, tuple[float, float]] | None,
+    stage_configs: list[GlobalSearchStageConfig],
+    random_seed: int,
+    include_current_theta_as_start: bool = True,
+    jitter_scale: float = 0.10,
+    box_shrink_factor_per_stage: float = 1.0,
+) -> GlobalSearchResult:
+    normalized_initial = {name: float(value) for name, value in initial_params.items()}
+    normalized_free_params = _coerce_free_params(free_params, normalized_initial)
+    if not normalized_free_params:
+        raise ValueError("Select at least one parameter to estimate in the global MLE search.")
+    if not stage_configs:
+        raise ValueError("Provide at least one stage for the global search.")
+
+    normalized_start_box = _coerce_start_box(start_box, normalized_free_params, normalized_initial)
+    start_box_frame = _build_start_box_frame(normalized_start_box)
+
+    previous_survivors = []
+    current_center = dict(normalized_initial)
+    best_fit = None
+    best_candidate_row = None
+    all_rows = []
+    stage_summary_rows = []
+    total_runtime_seconds = 0.0
+    rng = np.random.default_rng(int(random_seed))
+
+    for stage_index, stage in enumerate(stage_configs):
+        stage_bounds = _stage_bounds(
+            normalized_start_box,
+            current_center,
+            stage_index=stage_index,
+            box_shrink_factor_per_stage=box_shrink_factor_per_stage,
+        )
+        stage_candidates = _build_stage_candidates(
+            stage_index=stage_index,
+            stage=stage,
+            template_params=normalized_initial,
+            free_params=normalized_free_params,
+            bounds=stage_bounds,
+            previous_survivors=previous_survivors,
+            include_current_theta_as_start=include_current_theta_as_start,
+            jitter_scale=jitter_scale,
+            rng=rng,
+        )
+
+        stage_rows = []
+        for candidate_index, candidate in enumerate(stage_candidates, start=1):
+            candidate_id = f"stage_{stage_index + 1:02d}_cand_{candidate_index:03d}"
+            fit_seed = int(random_seed) + stage_index * 10_000 + candidate_index
+            fit_start = perf_counter()
+            fitted_params = {}
+            fit_initial_params = dict(candidate["params"])
+            loglik = float("nan")
+            error_text = ""
+            fit_succeeded = False
+            fit_result = None
+
+            try:
+                fit_result = run_step_pomp_fit(
+                    data,
+                    initial_params=fit_initial_params,
+                    free_params=normalized_free_params,
+                    particles=stage.particles,
+                    mif_iterations=stage.mif_iterations,
+                    random_seed=fit_seed,
+                    cooling_fraction=stage.cooling_fraction,
+                    rw_sd_scale=stage.rw_sd_scale,
+                    evaluation_particles=stage.evaluation_particles,
+                    evaluation_pfilter_reps=stage.evaluation_pfilter_reps,
+                )
+                fit_succeeded = True
+                loglik = float(fit_result.loglik)
+                fitted_params = dict(fit_result.fitted_params)
+                fit_initial_params = dict(fit_result.initial_params)
+                if best_fit is None or (
+                    np.isfinite(loglik)
+                    and (not np.isfinite(best_fit.loglik) or loglik > float(best_fit.loglik))
+                ):
+                    best_fit = fit_result
+            except Exception as exc:
+                error_text = str(exc)
+
+            runtime_seconds = float(perf_counter() - fit_start)
+            total_runtime_seconds += runtime_seconds
+
+            row = {
+                "stage_index": stage_index + 1,
+                "stage_name": stage.name,
+                "candidate_id": candidate_id,
+                "parent_candidate_id": candidate["parent_candidate_id"],
+                "origin": str(candidate["origin"]),
+                "fit_seed": fit_seed,
+                "fit_succeeded": fit_succeeded,
+                "loglik": loglik,
+                "runtime_seconds": runtime_seconds,
+                "particles": stage.particles,
+                "mif_iterations": stage.mif_iterations,
+                "cooling_fraction": stage.cooling_fraction,
+                "rw_sd_scale": stage.rw_sd_scale,
+                "evaluation_particles": stage.evaluation_particles,
+                "evaluation_pfilter_reps": stage.evaluation_pfilter_reps,
+                "error": error_text,
+            }
+            for name in sorted(normalized_initial):
+                row[f"start_{name}"] = float(fit_initial_params.get(name, normalized_initial[name]))
+                row[f"fitted_{name}"] = float(fitted_params[name]) if name in fitted_params else np.nan
+            stage_rows.append(row)
+
+            if fit_succeeded and fit_result is not None:
+                if best_candidate_row is None or (
+                    np.isfinite(loglik)
+                    and (not np.isfinite(float(best_candidate_row.get("loglik", np.nan))) or loglik > float(best_candidate_row["loglik"]))
+                ):
+                    best_candidate_row = dict(row)
+
+        stage_frame = pd.DataFrame(stage_rows)
+        stage_frame = stage_frame.sort_values("loglik", ascending=False, na_position="last").reset_index(drop=True)
+        stage_frame["stage_rank"] = np.arange(1, len(stage_frame) + 1, dtype=int)
+
+        successful_frame = stage_frame.loc[stage_frame["fit_succeeded"]].copy()
+        keep_count = min(int(stage.keep_top), len(successful_frame))
+        kept_ids = set(successful_frame.head(keep_count)["candidate_id"].astype(str).tolist())
+        stage_frame["kept_for_next_stage"] = stage_frame["candidate_id"].astype(str).isin(kept_ids)
+        all_rows.extend(stage_frame.to_dict("records"))
+
+        previous_survivors = []
+        for survivor_row in stage_frame.loc[stage_frame["kept_for_next_stage"]].to_dict("records"):
+            previous_survivors.append(
+                {
+                    "candidate_id": str(survivor_row["candidate_id"]),
+                    "fitted_params": {
+                        name: float(survivor_row[f"fitted_{name}"])
+                        for name in normalized_initial
+                        if pd.notna(survivor_row.get(f"fitted_{name}"))
+                    },
+                }
+            )
+        if previous_survivors:
+            current_center = dict(previous_survivors[0]["fitted_params"])
+
+        stage_summary_rows.append(
+            {
+                "stage_index": stage_index + 1,
+                "stage_name": stage.name,
+                "n_starts": stage.n_starts,
+                "n_successful": int(successful_frame["fit_succeeded"].sum()) if "fit_succeeded" in successful_frame.columns else int(len(successful_frame)),
+                "keep_top": stage.keep_top,
+                "best_loglik": float(pd.to_numeric(stage_frame["loglik"], errors="coerce").max()) if stage_frame["loglik"].notna().any() else np.nan,
+                "median_loglik": float(pd.to_numeric(successful_frame["loglik"], errors="coerce").median()) if not successful_frame.empty else np.nan,
+                "runtime_seconds": float(pd.to_numeric(stage_frame["runtime_seconds"], errors="coerce").sum()),
+                "fresh_random_starts": stage.n_fresh_random_starts,
+                "jittered_restarts": stage.n_jittered_restarts,
+                "stage_best_candidate_id": str(stage_frame.iloc[0]["candidate_id"]),
+            }
+        )
+
+    if best_fit is None or best_candidate_row is None:
+        raise ValueError("No successful IF2 fits were produced in the global search.")
+
+    best_run = run_step_pomp_if2(
+        data,
+        initial_params=dict(best_fit.fitted_params),
+        free_params=[],
+        particles=int(best_candidate_row["evaluation_particles"]),
+        mif_iterations=0,
+        random_seed=int(best_candidate_row["fit_seed"]),
+        cooling_fraction=float(best_candidate_row["cooling_fraction"]),
+        rw_sd_scale=float(best_candidate_row["rw_sd_scale"]),
+        evaluation_particles=int(best_candidate_row["evaluation_particles"]),
+        evaluation_pfilter_reps=int(best_candidate_row["evaluation_pfilter_reps"]),
+    )
+
+    candidate_frame = pd.DataFrame(all_rows).sort_values(
+        ["loglik", "stage_index", "stage_rank"],
+        ascending=[False, True, True],
+        na_position="last",
+    ).reset_index(drop=True)
+    stage_summary = pd.DataFrame(stage_summary_rows).sort_values("stage_index").reset_index(drop=True)
+
+    return GlobalSearchResult(
+        best_fit=best_fit,
+        best_run=best_run,
+        candidate_frame=candidate_frame,
+        stage_summary=stage_summary,
+        start_box_frame=start_box_frame,
+        total_runtime_seconds=float(total_runtime_seconds),
+    )
+
+
+def get_cached_global_search_result(
+    data: HourlyStepModelData,
+    *,
+    participant_id: str,
+    analysis_start: pd.Timestamp,
+    analysis_end: pd.Timestamp,
+    initial_params: dict[str, float],
+    free_params: list[str] | None,
+    start_box: dict[str, tuple[float, float]] | None,
+    stage_configs: list[GlobalSearchStageConfig],
+    random_seed: int,
+    include_current_theta_as_start: bool,
+    jitter_scale: float,
+    box_shrink_factor_per_stage: float,
+) -> GlobalSearchResult:
+    stage_config_snapshot = [
+        {
+            "name": stage.name,
+            "n_starts": int(stage.n_starts),
+            "keep_top": int(stage.keep_top),
+            "particles": int(stage.particles),
+            "mif_iterations": int(stage.mif_iterations),
+            "cooling_fraction": float(stage.cooling_fraction),
+            "rw_sd_scale": float(stage.rw_sd_scale),
+            "evaluation_particles": int(stage.evaluation_particles),
+            "evaluation_pfilter_reps": int(stage.evaluation_pfilter_reps),
+            "n_fresh_random_starts": int(stage.n_fresh_random_starts),
+            "n_jittered_restarts": int(stage.n_jittered_restarts),
+        }
+        for stage in stage_configs
+    ]
+    cache_inputs = {
+        "participant_id": participant_id,
+        "analysis_start_utc_iso": analysis_start.isoformat(),
+        "analysis_end_utc_iso": analysis_end.isoformat(),
+        "model_covariate_keys": list(data.covariate_keys),
+        "initial_params": copy.deepcopy(initial_params),
+        "free_params": list(free_params or []),
+        "start_box": copy.deepcopy(start_box),
+        "stage_configs": stage_config_snapshot,
+        "random_seed": int(random_seed),
+        "include_current_theta_as_start": bool(include_current_theta_as_start),
+        "jitter_scale": float(jitter_scale),
+        "box_shrink_factor_per_stage": float(box_shrink_factor_per_stage),
+    }
+    return get_or_compute_shelve(
+        "global_step_pomp_search_result",
+        cache_inputs,
+        lambda: run_multistage_step_pomp_search(
+            data,
+            initial_params=initial_params,
+            free_params=free_params,
+            start_box=start_box,
+            stage_configs=stage_configs,
+            random_seed=random_seed,
+            include_current_theta_as_start=include_current_theta_as_start,
+            jitter_scale=jitter_scale,
+            box_shrink_factor_per_stage=box_shrink_factor_per_stage,
+        ),
+        prepare_for_store=strip_global_search_result,
+    )
+
+
+global_search_stage_configs = [
+    GlobalSearchStageConfig(**stage_dict)
+    for stage_dict in global_search_stage_controls
+]
+
+global_search_result = get_cached_global_search_result(
+    hourly_data,
+    participant_id=participant_id,
+    analysis_start=analysis_start,
+    analysis_end=analysis_end,
+    initial_params=initial_params,
+    free_params=active_free_params,
+    start_box=global_search_start_box,
+    stage_configs=global_search_stage_configs,
+    random_seed=global_search_controls["random_seed"],
+    include_current_theta_as_start=global_search_controls["include_current_theta_as_start"],
+    jitter_scale=global_search_controls["jitter_scale"],
+    box_shrink_factor_per_stage=global_search_controls["box_shrink_factor_per_stage"],
+)
+
+global_best_fit = global_search_result.best_fit
+global_best_run = global_search_result.best_run
+
+global_best_summary = pd.DataFrame(
+    [
+        {
+            "Search": "Global MLE",
+            "Participant ID": participant_id,
+            "LogLik": global_best_run.loglik,
+            **global_best_fit.fitted_params,
+        }
+    ]
+).round(3)
+
+global_stage_summary = (
+    global_search_result.stage_summary[
+        [
+            "stage_name",
+            "n_starts",
+            "n_successful",
+            "keep_top",
+            "best_loglik",
+            "runtime_seconds",
+        ]
+    ]
+    .rename(
+        columns={
+            "stage_name": "Stage",
+            "n_starts": "Starts",
+            "n_successful": "Successful fits",
+            "keep_top": "Keep top",
+            "best_loglik": "Best logLik",
+            "runtime_seconds": "Runtime (s)",
+        }
+    )
+    .round(3)
+)
+global_stage_summary.insert(0, "Search", "Global")
+
+display_table(global_best_summary, precision=3)
+display_table(global_stage_summary, precision=3)
+```
+
+
+
+Coefficients:
+
+```{python}
+#| warning: false
+#| message: false
+
+# Compare the starting values with the fitted local MLE so it is easy to see
+# which coefficients moved under the local search and the two-stage global search.
+coefficient_rows = []
+for param_name in initial_params:
+    local_value = local_step_pomp_result.fitted_params.get(param_name, initial_params[param_name])
+    global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
+    coefficient_rows.append(
+        {
+            "Parameter": param_name,
+            "Initial value": initial_params[param_name],
+            "Local MLE value": local_value,
+            "Global MLE value": global_value,
+        }
+    )
+
+coefficient_table = pd.DataFrame(coefficient_rows).round(3)
+display_table(coefficient_table, precision=3)
+```
+
+Plot of reconstructed 24 hour filtered reward:
+
+```{python}
+#| warning: false
+#| message: false
+
+# Plot the filtered 24-hour reward reconstruction after the local 3pm decision
+# time. By default this uses the best fit from the global two-stage search.
+def select_plot_result(plot_source: str) -> tuple[StepPompRunResult, str]:
+    normalized_source = str(plot_source).strip().lower()
+    if normalized_source == "local":
+        return local_step_pomp_result, "local fit"
+    return global_best_run, "global-best fit"
+
+
+plot_result, plot_label = select_plot_result(reward_plot_fit_source)
+
+reward_plot = plot_result.reward_frame.copy()
+reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
+reward_plot["decision_date"] = pd.to_datetime(
+    reward_plot["decision_local_time"],
+    errors="coerce",
+).dt.tz_localize(None)
+
+plt.style.use("seaborn-v0_8-whitegrid")
+fig, ax = plt.subplots(figsize=(reward_plot_fig_width, reward_plot_fig_height))
+
+ax.bar(
+    reward_plot["decision_date"],
+    reward_plot["latent_reward_24h"],
+    color="#d69e2e",
+    alpha=0.75,
+    width=0.8,
+    label="Filtered latent reward",
+)
+ax.plot(
+    reward_plot["decision_date"],
+    reward_plot["fitbit_observed_reward_24h"],
+    color="#2b6cb0",
+    linewidth=1.8,
+    marker="o",
+    markersize=3,
+    label="Observed Fitbit subtotal",
+)
+
+ax.set_title(
+    f"Reconstructed 24-hour filtered reward for {participant_id} ({plot_label})",
+    fontsize=reward_plot_title_fontsize,
+)
+ax.set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
+ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
+ax.legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
+ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
+plt.xticks(rotation=45, ha="right")
+
+plt.tight_layout()
+plt.show()
+```
+
+
+Plot of residual size vs missingness:
+
+```{python}
+#| warning: false
+#| message: false
+
+# Plot residual = filtered latent reward - observed Fitbit subtotal against the
+# number of missing Fitbit hours in the 24-hour reward window.
+plot_result, _ = select_plot_result(residual_plot_fit_source)
+residual_plot = plot_result.reward_frame.copy()
+residual_plot = residual_plot.loc[residual_plot["complete_window"]].copy()
+residual_plot["missing_fitbit_hours"] = (
+    24
+    - pd.to_numeric(
+        residual_plot["fitbit_observed_hours"],
+        errors="coerce",
+    ).fillna(0.0)
+).round().clip(lower=0, upper=24).astype(int)
+residual_plot["reward_residual"] = (
+    pd.to_numeric(residual_plot["latent_reward_24h"], errors="coerce")
+    - pd.to_numeric(residual_plot["fitbit_observed_reward_24h"], errors="coerce")
+)
+
+plt.style.use("seaborn-v0_8-whitegrid")
+fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
+
+ax.scatter(
+    residual_plot["missing_fitbit_hours"],
+    residual_plot["reward_residual"],
+    color="#d69e2e",
+    edgecolor="#8c6d1f",
+    alpha=0.8,
+    s=40,
+)
+ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
+
+ax.set_title(f"Filtered reward residual vs missingness for {participant_id}")
+ax.set_xlabel("Missing Fitbit hours in 24-hour window")
+ax.set_ylabel("Filtered reward - observed subtotal")
+ax.set_xlim(-0.5, 24.5)
+ax.set_xticks(np.arange(0, 25, 1))
+
+plt.tight_layout()
+plt.show()
+```
+
+
+## Acknowledgments {.unnumbered}
+Coding was heavily assisted by ChatGPT 5.4 in Codex.
+
+
+
+::: {#refs}
+:::
