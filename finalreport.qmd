@@ -66,9 +66,7 @@ Both projects face the same issue of missing data. The HRV project pooled all pa
 
 ## Research Question
 
-people are not consistently wearing the devices -> missing data problem
-
-missing rewards using POMP model
+When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward cannot be constructed, so that day provides no training information for the model. The goal of this project is to build personalized POMP models for each doctor and use smoothing to estimate the missing rewards.
 
 # Data Overview
 
