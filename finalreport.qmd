@@ -85,6 +85,197 @@ how often is the data collected (every hour) and time period (using 3 months dat
     + we are focusing on participants that use fitbit but will use info provided by other devices if necessary
   + missing data
 
+```{python}
+# | echo: false
+# | label: eda-libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+```
+
+```{python}
+# | echo: false
+# | label: eda-read-data
+# read in dataset
+fitbit_hourly = pd.read_csv("../FitbitHourly_old.csv")
+fitbit_hourly.head()
+```
+
+```{python}
+# | echo: false
+# count how many participants are in the dataset
+num_participants = fitbit_hourly['PARTICIPANTIDENTIFIER'].nunique()
+print(f"There are {num_participants} participants in the dataset.")
+```
+
+```{python}
+# | echo: false
+# | label: fitbit-missing
+# for each participant, get the mean value of the fitbitStepsMissing column (0 = step count recorded, 1 = missing) for a percent of how many hourly windows we have steps missing for.
+fitbit_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['fitbitStepsMissing'].mean() * 100).sort_values(ascending=True)
+
+# count how many have at least 50% of hours with a step count recorded
+num_participants_50_percent_fitbit = (fitbit_steps_missing_percent < 50).sum()
+print(f"{num_participants_50_percent_fitbit} participants have at least 50% of hours with a fitbit step count recorded.")
+```
+
+```{python}
+# | echo: false
+# | label: apple-missing
+# repeat for apple
+apple_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['appleStepsMissing'].mean() * 100).sort_values(ascending=True)
+
+print(apple_steps_missing_percent.head())
+
+# count how many have at least 50% of hours with a step count recorded
+num_participants_50_percent_apple = (apple_steps_missing_percent < 50).sum()
+print(f"{num_participants_50_percent_apple} participants have at least 50% of hours with a step count recorded with apple watch.")
+
+```
+
+```{python}
+# | echo: false
+# | label: missingness-histogram
+# plot histogram of percent of hours with a step count missing for each participant for fitbit and apple
+# add same y-axis limits for both plots for easier comparison
+
+sns.histplot(fitbit_steps_missing_percent, bins=20, color='steelblue',
+                edgecolor='black')
+plt.xlabel('Percent of hours with a step count missing (Fitbit)')
+plt.ylabel('Number of participants')
+plt.title('Distribution of percent of hours with a step count missing for Fitbit')
+plt.ylim(0, 205)
+plt.show()
+
+sns.histplot(apple_steps_missing_percent, bins=20, color='steelblue',
+                edgecolor='black')
+plt.xlabel('Percent of hours with a step count missing (Apple)')
+plt.ylabel('Number of participants')
+plt.title('Distribution of percent of hours with a step count missing for Apple')
+plt.ylim(0, 205)
+plt.show()
+
+```
+
+```{python}
+# | echo: false
+# | label: combined-device-missing
+# If we combined step count metrics from fitbit and apple, how many participants would have at least 50% hours recorded?
+# missing on "either device" means missing on BOTH devices that hour
+
+combined_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].min(axis=1)  # 0 if either recorded, 1 if both missing
+
+# percent missing per participant
+combined_steps_missing_percent = (
+    combined_missing_hour
+    .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
+    .mean()
+    .mul(100)
+    .sort_values(ascending=True)
+)
+
+# 3) participants with at least 50% hours recorded => missing < 50%
+num_participants_50_percent_combined = (combined_steps_missing_percent < 50).sum()
+print(f"{num_participants_50_percent_combined} participants have at least 50% of hours with a step count recorded on either device.")
+```
+
+```{python}
+# | echo: false
+# | label: both-devices-50
+# how many participants have a recording for both devices (fitbit and apple) for at least 50% of hours?
+both_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].max(axis=1)  # 0 if both recorded, 1 if either missing
+both_steps_missing_percent = (
+    both_missing_hour
+    .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
+    .mean()
+    .mul(100)
+    .sort_values(ascending=True)
+)
+num_participants_50_percent_both = (both_steps_missing_percent < 50).sum()
+print(f"{num_participants_50_percent_both} participants have at least 50% of hours with a step count recorded on both devices.")
+
+# Participant identifiers with at least 50% of hours recorded for both devices
+both_steps_missing_percent[both_steps_missing_percent < 50]
+```
+
+
+<!-- 
+This is some UM-GPT code that is trying to plot the distribution of percent missingness for each combination of metric/device across participants. It's almost working, the issue is that the metric columns and the Missing columns have different names (e.g. appleHRAvg vs appleHRMissing (needs to be appleHRAvgMissing). If that gets corrected we could plot all of the metrics and use their missingness as extra justification for picking the steps as an outcome variable. Right now it only works for plotting steps. Also, some of the Missing columns have NaN instead of 0/1, which should probably be replace with 1 but should be double-checked.
+-->
+
+```{python}
+# | echo: false
+# df = fitbit_hourly
+
+# ignore = {"moodScore", "messageSent", "messageStrategy"}
+
+# # Missing-indicator columns (0 recorded, 1 missing; but may contain NaN)
+# missing_cols = [c for c in df.columns if c.endswith("Missing") and c not in ignore]
+
+# # IMPORTANT: if Missing columns have NaN (common when a device wasn't used),
+# # decide how to treat them. Usually: NaN => missing (1).
+# df2 = df.copy()
+# df2[missing_cols] = df2[missing_cols].fillna(1)
+
+# def parse_missing_col(c):
+#     base = c[:-len("Missing")]
+#     m = re.match(r"^(apple|fitbit|garmin)(.+)$", base)
+#     if m:
+#         return m.group(1), m.group(2)  # device, metric (e.g., Steps, HRAvg, SleepMinutes)
+#     return None, base
+
+# # fraction missing per participant per metric/device
+# long = (
+#     df2.groupby("PARTICIPANTIDENTIFIER")[missing_cols]
+#        .mean()                       # mean of 0/1 = fraction missing
+#        .reset_index()
+#        .melt(id_vars="PARTICIPANTIDENTIFIER",
+#              var_name="missing_col",
+#              value_name="frac_missing")
+# )
+
+# long["pct_missing"] = 100 * long["frac_missing"]
+# long[["device", "metric"]] = long["missing_col"].apply(lambda c: pd.Series(parse_missing_col(c)))
+
+# # Choose which metrics to facet (these are the parsed metric names)
+# metric_groups = ["Steps"]#, "HRAvg", "HRMin", "HRMax", "HRVAvg", "SleepMinutes"]
+# plot_df = long[long["device"].notna() & long["metric"].isin(metric_groups)].copy()
+
+# # Optional: nicer label for sleep
+# plot_df["metric"] = plot_df["metric"].replace({"SleepMinutes": "SleepMinutes"})
+
+# plot_df["device"] = pd.Categorical(plot_df["device"], ["apple", "fitbit", "garmin"], ordered=True)
+# plot_df["metric"]  = pd.Categorical(plot_df["metric"], metric_groups, ordered=True)
+
+# sns.set(style="whitegrid")
+
+# g = sns.FacetGrid(
+#     plot_df,
+#     row="metric",
+#     col="device",
+#     margin_titles=True,
+#     height=2.4,
+#     aspect=1.4,
+#     sharex=True,
+#     sharey=True
+# )
+# g.map_dataframe(
+#     sns.histplot,
+#     x="pct_missing",
+#     bins=20,
+#     color="steelblue",
+#     edgecolor="black"
+# )
+
+# g.set_axis_labels("Percent missing (per participant)", "Participants")
+# g.set_titles(row_template="{row_name}", col_template="{col_name}")
+# plt.tight_layout()
+# plt.show()
+```
+
+
 ## Design Decisions (maybe combine with Data Description and Preprocessing)
 
 need to define buckets (user, hour) -> are we dividing the day up into thirds or keeping the 24 hours (UDPATE: using 24 hours for the buckets which makes it easier to define missingness)
