@@ -3,6 +3,8 @@ title: "Title of Project (TBD)\\vspace{-2cm}"
 bibliography: references.bib
 nocite: "@*"
 csl: ieee.csl
+execute:
+  echo: false
 format:
   pdf:
     include-in-header:
@@ -72,12 +74,14 @@ When a participant does not wear the watch, no step count data are collected dur
 
 ## Data Description and Preprocessing
 
+## Multiple device analysis
 short description of where the data was obtained and variables included (more in-depth explanation of variables will be in the supplementary material)
 
 how often is the data collected (every hour) and time period (using 3 months data)
 
 * Justify why Fitbit only
-* Justify using 99 Fitbit people, and how much missingness (there's what percentage of hours are missing, additionally what percentage of days are considered missing (>12 hours missing in one day is a missing day))
+(Garmin is not used a lot. Apple is actually HealthKit, which is a mixture of phone data and watch data; additionally, the healthkit can integrate with other wearables such as Garmin, so the steps data may not even originate from Apple watch. It's too difficult to disentangle the biases on this device)
+* Justify using 99 Fitbit people, and how much missingness (we consider a reward (24hoursteps after the decision point) missing if there's no observed data in more than 12 of the hourly buckets. We only use participants with at least one day of not-missing reward.)
 * sample statistics like mean, std
 * eda plots and summary statistics
   + sample size (~1000 doctors)
@@ -99,7 +103,7 @@ import re
 # | echo: false
 # | label: eda-read-data
 # read in dataset
-fitbit_hourly = pd.read_csv("../FitbitHourly_old.csv")
+fitbit_hourly = pd.read_csv("FitbitHourly.csv")
 fitbit_hourly.head()
 ```
 
@@ -285,26 +289,61 @@ how much data needs to be missing to be considered "missing" for each bucket
 Benchmark test:
 Mask a percentage of the data (uniformly random missing hourly buckets, or uniformly random missing whole days of data), fit the smoother on both the masked data and unmasked data, calculate the RMSE for each. Run this across multiple fractions of missing data; i.e. if $m$ is the fraction of the data we mask, then we might sweep across $m = 0.1, 0.2, 0.3, 0.4, 0.5$ and see what the relationship is between amount of artificial missingness, actual missingness, performance of the smoother and filter in both settings, for each participant. Try this with individual models, and with a joint panel pomp.
 
-Unsolved design problems:
-Which variables will be pooled, or partially pooled?
-Potential features to do feature selection for personalized covariates
-In $\log \lambda_t$, the $x_t$ could potentially be overwhelmed in size by the $\beta^\intercal z_t$, the $\alpha_{h(t)}$ or the $\delta_{w(t)}$, especially because the latter two are chosen not within the pomp itself so their scale may be off.
-How do we handle the connection between multiple devices, or do we say screw it?
-If we do pooling, clustering of participants could be useful. How might we go about clustering participants?
+CANDIDATE BENCHMARKS:
+1) RMSE across a participant's time series for masked and unmasked models vs observed data. How much RMSE do we gain when masked?
+2) RMSE across only the masked data, for masked and unmasked models. How much RMSE do we increase when masked?
+3) Define ERROR as "difference between masked model and unmasked model" = ActualLatent - PredictedLatent where ActualLatent is the latent estimated without masking
+
+## Limitations of Benchmark
 
 # Methodology and Results
 
-## Variable Selection
 
-LASSO cross validation for variable selection thing (if we get to it)
 
-For each individual, we selected a set of covariates to improve the model’s ability to capture long-term dependence. This allowed the covariates included in the model to vary across doctors. As covariates, we used other health-related measures collected by the wearable devices, such as mood, heart rate variability, and sleep. We then performed feature engineering to construct additional variables, such as an indicator for whether the doctor exercised within the previous 24 hours based on heart rate data.
+### Model
 
-Next, we used these covariates in a Lasso model with cross-validation to perform feature selection for each individual. For individuals with substantial missing data for a given covariate, that covariate was excluded from the final feature set. (Explain how we removed variables based on the degree of missingness.)
+Model:
+Latent process:
+$$
+x_{t+1} = \phi x_t + \sigma \epsilon_t, 
+\qquad \epsilon_t \sim N(0, 1)
+$$
+$$
+N_t | x_t \sim \text{Poisson}(\lambda, t),
+\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t
+$$
+
+$$
+Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)
+$$
+
+$$
+Y^A_t | N_t \sim \text{NegBin}(q_A N_t, k_A)
+$$
+
+
+$$
+Y^G_t | N_t \sim \text{NegBin}(q_G N_t, k_G)
+$$
+
+Our aim is to estimate the step count 24 hours after 3pm local time each day:
+$$
+R_d = \sum \limits_{t \in H(d)} N_t
+$$
+
+The latent time model is a simple AR(1). The other components of the $\lambda_t$ are $\alpha_{h(t)}$, a personalized time of day factor, $\delta_{w(t)}$ a personalized day of week factor, and $\beta^\intercal z_t$, which are any covariates we decide to add. The $\alpha_{h(t)}$ and $\delta_{w(t)}$ are computed by simple averages of their measured step counts in the given hourly bucket. That is, $h(t)$ is the local hour of the day of time point $t$, and $w(t)$ is the day of the week of the time point $t$, and  $\alpha_{13}$ means the average step count in the 13th hourly bucket each day for this user, and $\delta_4$ means the average step count on the 4th day of the week (Thursday).
+
+Because $\log \lambda_t$ is a linear model, we'll do variable selection for the features chosen in $z_t$ via a linear model. Specifically, we'll do it in a personalized way across all participants, using LASSO. Across a large set of candidate features, run a regression, use cross validation to pick the best penalty value. The variables which vanish under this penalty we don't pick, the variables which stay, we do pick. We run this across all participants being studied, so each user has a personalized feature set.
+
+In the observation distributions, picking $k_F$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t^F | N_t) = N_t + \frac{N^2_t}{k_F}$. When $k_F \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k_F$ large, we have Poisson distribution. But from running a few of these, $k_F$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
+
+Our interpretation of $k_F$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k_F \sim N(\mu_F, \sigma^2_F)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k_F$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
+
+The $k_A$ and $k_G$ are basically the same estimation problem. We have other pools of participants that we can estimate them with, but those might be related to their -own- latent distributions, which is related to this problem of estimating $q_A$ and $q_G$. We aren't sure if we're even incorporating other devices, so this is lower priority. In a nutshell, we can try to estimate $q_A$ by checking hourly buckets with overlap between Fitbit and Apple, and try to see if there's a strong correlation. The $q_A$ would be the regression coefficient, perhaps the uncertainty from the regression or $R^2$ can be pushed through into the variance of the measurement distribution.
 
 ## Individual
 
-### Model
+Here is what it looks like to run this model on an individual
 
 ```{python}
 #| warning: false
@@ -1263,46 +1302,6 @@ display_table(participant_summary, precision=2)
 ```
 
 
-paragraph 2: insert relevant equations
-
-Model:
-Latent process:
-$$
-x_{t+1} = \phi x_t + \sigma \epsilon_t, 
-\qquad \epsilon_t \sim N(0, 1)
-$$
-$$
-N_t | x_t \sim \text{Poisson}(\lambda, t),
-\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t
-$$
-
-$$
-Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)
-$$
-
-$$
-Y^A_t | N_t \sim \text{NegBin}(q_A N_t, k_A)
-$$
-
-
-$$
-Y^G_t | N_t \sim \text{NegBin}(q_G N_t, k_G)
-$$
-
-Our aim is to estimate the step count 24 hours after 3pm local time each day:
-$$
-R_d = \sum \limits_{t \in H(d)} N_t
-$$
-
-The latent time model is a simple AR(1). The other components of the $\lambda_t$ are $\alpha_{h(t)}$, a personalized time of day factor, $\delta_{w(t)}$ a personalized day of week factor, and $\beta^\intercal z_t$, which are any covariates we decide to add. The $\alpha_{h(t)}$ and $\delta_{w(t)}$ are computed by simple averages of their measured step counts in the given hourly bucket. That is, $h(t)$ is the local hour of the day of time point $t$, and $w(t)$ is the day of the week of the time point $t$, and  $\alpha_{13}$ means the average step count in the 13th hourly bucket each day for this user, and $\delta_4$ means the average step count on the 4th day of the week (Thursday).
-
-Because $\log \lambda_t$ is a linear model, we'll do variable selection for the features chosen in $z_t$ via a linear model. Specifically, we'll do it in a personalized way across all participants, using LASSO. Across a large set of candidate features, run a regression, use cross validation to pick the best penalty value. The variables which vanish under this penalty we don't pick, the variables which stay, we do pick. We run this across all participants being studied, so each user has a personalized feature set.
-
-In the observation distributions, picking $k_F$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t^F | N_t) = N_t + \frac{N^2_t}{k_F}$. When $k_F \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k_F$ large, we have Poisson distribution. But from running a few of these, $k_F$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
-
-Our interpretation of $k_F$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k_F \sim N(\mu_F, \sigma^2_F)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k_F$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
-
-The $k_A$ and $k_G$ are basically the same estimation problem. We have other pools of participants that we can estimate them with, but those might be related to their -own- latent distributions, which is related to this problem of estimating $q_A$ and $q_G$. We aren't sure if we're even incorporating other devices, so this is lower priority. In a nutshell, we can try to estimate $q_A$ by checking hourly buckets with overlap between Fitbit and Apple, and try to see if there's a strong correlation. The $q_A$ would be the regression coefficient, perhaps the uncertainty from the regression or $R^2$ can be pushed through into the variance of the measurement distribution.
 
 
 
@@ -1311,16 +1310,14 @@ The $k_A$ and $k_G$ are basically the same estimation problem. We have other poo
 
 ###  Initial Parameter Estimation
 
-Show one person's parameters and what their model looks like
+This section can be for "fiddling" with parameters. Show a few plots of what the effect of changing phi vs sigma vs k is on an hourly bucket level, and on a 24 hour reward level.
 
-Show aggregate parameters.
+Here it might be pedagogically nice to display what hourly buckets look like, and then ultimately we aggregate those into 24 hour reward windows.
 
-Show what models look like with high missingness vs low missingness, and the problem of divergence when there's big contiguous missing chunks
 
-insert graph with simulated data based on parameter estimates
 
 ### Local Search
-*Thursday
+Here is a local search. We aren't sure right now why we do this when we do global search after. Could go in supplemental. Could say that it's here just to test that the code works. Code say that the global shows how poorly a local search does at finding parameters.
 Design local search
 (RL = 0)
 
@@ -1723,7 +1720,9 @@ display_table(local_mle_summary, precision=3)
 
 
 ### Global Search
-*Thursday
+
+What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
+
 Design global search
 
 ```{python}
@@ -2264,6 +2263,8 @@ display_table(coefficient_table, precision=3)
 
 ### Diagnostics
 
+
+Maybe do a simulation?
 (individual level diagnostics)
 Plot of filtered vs smoothed vs observation data
 Masking, filtered/smoothed performance with RMSE.
@@ -2380,32 +2381,47 @@ plt.show()
 ```
 ## Aggregate modeling
 
-Even without panel pomp, we do big aggregate models. Aggregate testing RMSE vs missingness across all the participants.
-
-Aggregate parameter estimates ($\phi, \sigma, k_F$ for each participant averaged, std deviation too)
-
-If we get the chance, partial pooling panel pomp with a $k_F$ from a shared distribution.
-
-### Initial Parameter Estimation
+Small panel pomp explanation with citation
 
 
-
-### Local Search
 
 
 
 ### Global Search
 
+Describe the parameters used
 
 ## Diagnostics
 
+Even without panel pomp, we do big aggregate models. Aggregate testing RMSE vs missingness across all the participants. This is useful pedagogically but not explicitly for prediction. If we run out of space, this would be good in supplemental material.
 
+Aggregate parameter estimates ($\phi, \sigma, k_F$ for each participant averaged, std deviation too)
+
+Show what models look like with high missingness vs low missingness, and the problem of divergence when there's big contiguous missing chunks
+
+
+Benchmarking
+
+List of models to try:
+ARMA
+AR(1) latent x
+AR(2) latent x
+AR(1) + 24-hour-lag latent x
+AR(2) + 24-hour-lag latent x
+alpha and delta baselines empirical vs continuous
+Potentially covariates like max heartrate last 24hours
+
+
+If we get the chance, partial pooling panel pomp with a $k_F$ from a shared distribution.
 
 # Conclusion
 
 paragraph 1: summary of the analysis that was done
 
 paragraph 2: limitations, direction for future analysis, wrap up sentence
+
+Limitations:
+Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good.  Partial pooling of k_fitbit because we suspect that it should be a device-centric parameter. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules).
 
 # Contributions
 - Group Member 1: 
@@ -2449,3 +2465,4 @@ The following data files were used for this project:
     + messageSent: binary indicator of whether the agent sent the participant a message during that hour (1 = message was sent, 0 = no message was sent)
     + messageStrategy: NOT SURE
 
+## Additional background information
