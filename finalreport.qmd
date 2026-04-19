@@ -20,7 +20,7 @@ number-sections: true
 
 # Introduction
 
-## Background Information
+## Background Information and Project Motivation
 
 <!-- 
 Intern Health Study (IHS) 2024 -> data on ~1000 new doctors
@@ -34,11 +34,9 @@ at 3 pm, individuals have a 50% change of receiving a message (decided by an age
 goal: maximize step count which is the reward (I think?)
 -->
 
-The Intern Health Study (IHS) 2024 contains data on approximately 1,000 new doctors. The study collects information across three domains: mood, sleep, and physical activity. In this project, we focus only on physical activity which is measured using step count. Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
+The Intern Health Study (IHS) 2024 contains data on approximately 1,000 new doctors. @internhealthstudy The study collects information across three domains: mood, sleep, and physical activity. In this project, we focus only on physical activity which is measured using step count.
 
 At 3:00 p.m. each day, an agent decides whether a participant receives a message, with a 50% probability of sending a message and a 50% probability of not sending one. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest.
-
-## Project Motivation
 
 <!-- 
 RoME is a robust contextual bandit method for health apps that decides when to send notifications and how to personalize interventions based on the user’s current situation. @RoME
@@ -73,6 +71,8 @@ When a participant does not wear the watch, no step count data are collected dur
 # Data Overview
 
 ## Data Description and Preprocessing
+
+Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
 
 ## Multiple device analysis
 short description of where the data was obtained and variables included (more in-depth explanation of variables will be in the supplementary material)
