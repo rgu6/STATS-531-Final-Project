@@ -74,11 +74,22 @@ When a participant does not wear the watch, no step count data are collected dur
 
 Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
 
-## Multiple device analysis
-short description of where the data was obtained and variables included (more in-depth explanation of variables will be in the supplementary material)
+## Multiple Device Analysis
 
-how often is the data collected (every hour) and time period (using 3 months data)
+For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device.
 
+The data contains hourly Fitbit wearable data from July 1, 2024 to September 30, 2024 for 99 participants.These participants were included only if they had Fitbit data and had at least one day during the 90-day period with more than 12 hours of recorded step data. We consider 12 hours of data in the next 24 hours as enough to say that the data "wasn't missing" to construct the reward. From the original 299 Fitbit users in the data, we narrowed down the participants to 99. Additionally, 55 participants have at least 50% of hours with a fitbit step count recorded.
+
+<!--
+| Apple | Fitbit | Garmin | Apple + Fitbit | Fitbit + Garmin | Apple + Garmin | All Three | Total
+|---|---|---|
+| 557 | 82 | C |
+:  {#tbl-letters}
+-->
+
+- double check number of users for each device
+
+Notes:
 * Justify why Fitbit only
 (Garmin is not used a lot. Apple is actually HealthKit, which is a mixture of phone data and watch data; additionally, the healthkit can integrate with other wearables such as Garmin, so the steps data may not even originate from Apple watch. It's too difficult to disentangle the biases on this device)
 * Justify using 99 Fitbit people, and how much missingness (we consider a reward (24hoursteps after the decision point) missing if there's no observed data in more than 12 of the hourly buckets. We only use participants with at least one day of not-missing reward.)
@@ -104,14 +115,14 @@ import re
 # | label: eda-read-data
 # read in dataset
 fitbit_hourly = pd.read_csv("FitbitHourly.csv")
-fitbit_hourly.head()
+# fitbit_hourly.head()
 ```
 
 ```{python}
 # | echo: false
 # count how many participants are in the dataset
-num_participants = fitbit_hourly['PARTICIPANTIDENTIFIER'].nunique()
-print(f"There are {num_participants} participants in the dataset.")
+# num_participants = fitbit_hourly['PARTICIPANTIDENTIFIER'].nunique()
+# print(f"There are {num_participants} participants in the dataset.")
 ```
 
 ```{python}
@@ -120,22 +131,22 @@ print(f"There are {num_participants} participants in the dataset.")
 # for each participant, get the mean value of the fitbitStepsMissing column (0 = step count recorded, 1 = missing) for a percent of how many hourly windows we have steps missing for.
 fitbit_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['fitbitStepsMissing'].mean() * 100).sort_values(ascending=True)
 
-# count how many have at least 50% of hours with a step count recorded
-num_participants_50_percent_fitbit = (fitbit_steps_missing_percent < 50).sum()
-print(f"{num_participants_50_percent_fitbit} participants have at least 50% of hours with a fitbit step count recorded.")
+# # count how many have at least 50% of hours with a step count recorded
+# num_participants_50_percent_fitbit = (fitbit_steps_missing_percent < 50).sum()
+# print(f"{num_participants_50_percent_fitbit} participants have at least 50% of hours with a fitbit step count recorded.")
 ```
 
 ```{python}
 # | echo: false
 # | label: apple-missing
 # repeat for apple
-apple_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['appleStepsMissing'].mean() * 100).sort_values(ascending=True)
+# apple_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['appleStepsMissing'].mean() * 100).sort_values(ascending=True)
 
-print(apple_steps_missing_percent.head())
+# print(apple_steps_missing_percent.head())
 
-# count how many have at least 50% of hours with a step count recorded
-num_participants_50_percent_apple = (apple_steps_missing_percent < 50).sum()
-print(f"{num_participants_50_percent_apple} participants have at least 50% of hours with a step count recorded with apple watch.")
+# # count how many have at least 50% of hours with a step count recorded
+# num_participants_50_percent_apple = (apple_steps_missing_percent < 50).sum()
+# print(f"{num_participants_50_percent_apple} participants have at least 50% of hours with a step count recorded with apple watch.")
 
 ```
 
@@ -153,13 +164,13 @@ plt.title('Distribution of percent of hours with a step count missing for Fitbit
 plt.ylim(0, 205)
 plt.show()
 
-sns.histplot(apple_steps_missing_percent, bins=20, color='steelblue',
-                edgecolor='black')
-plt.xlabel('Percent of hours with a step count missing (Apple)')
-plt.ylabel('Number of participants')
-plt.title('Distribution of percent of hours with a step count missing for Apple')
-plt.ylim(0, 205)
-plt.show()
+# sns.histplot(apple_steps_missing_percent, bins=20, color='steelblue',
+#                 edgecolor='black')
+# plt.xlabel('Percent of hours with a step count missing (Apple)')
+# plt.ylabel('Number of participants')
+# plt.title('Distribution of percent of hours with a step count missing for Apple')
+# plt.ylim(0, 205)
+# plt.show()
 
 ```
 
@@ -169,39 +180,39 @@ plt.show()
 # If we combined step count metrics from fitbit and apple, how many participants would have at least 50% hours recorded?
 # missing on "either device" means missing on BOTH devices that hour
 
-combined_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].min(axis=1)  # 0 if either recorded, 1 if both missing
+# combined_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].min(axis=1)  # 0 if either recorded, 1 if both missing
 
-# percent missing per participant
-combined_steps_missing_percent = (
-    combined_missing_hour
-    .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
-    .mean()
-    .mul(100)
-    .sort_values(ascending=True)
-)
+# # percent missing per participant
+# combined_steps_missing_percent = (
+#     combined_missing_hour
+#     .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
+#     .mean()
+#     .mul(100)
+#     .sort_values(ascending=True)
+# )
 
-# 3) participants with at least 50% hours recorded => missing < 50%
-num_participants_50_percent_combined = (combined_steps_missing_percent < 50).sum()
-print(f"{num_participants_50_percent_combined} participants have at least 50% of hours with a step count recorded on either device.")
+# # 3) participants with at least 50% hours recorded => missing < 50%
+# num_participants_50_percent_combined = (combined_steps_missing_percent < 50).sum()
+# print(f"{num_participants_50_percent_combined} participants have at least 50% of hours with a step count recorded on either device.")
 ```
 
 ```{python}
 # | echo: false
 # | label: both-devices-50
 # how many participants have a recording for both devices (fitbit and apple) for at least 50% of hours?
-both_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].max(axis=1)  # 0 if both recorded, 1 if either missing
-both_steps_missing_percent = (
-    both_missing_hour
-    .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
-    .mean()
-    .mul(100)
-    .sort_values(ascending=True)
-)
-num_participants_50_percent_both = (both_steps_missing_percent < 50).sum()
-print(f"{num_participants_50_percent_both} participants have at least 50% of hours with a step count recorded on both devices.")
+# both_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].max(axis=1)  # 0 if both recorded, 1 if either missing
+# both_steps_missing_percent = (
+#     both_missing_hour
+#     .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
+#     .mean()
+#     .mul(100)
+#     .sort_values(ascending=True)
+# )
+# num_participants_50_percent_both = (both_steps_missing_percent < 50).sum()
+# print(f"{num_participants_50_percent_both} participants have at least 50% of hours with a step count recorded on both devices.")
 
-# Participant identifiers with at least 50% of hours recorded for both devices
-both_steps_missing_percent[both_steps_missing_percent < 50]
+# # Participant identifiers with at least 50% of hours recorded for both devices
+# both_steps_missing_percent[both_steps_missing_percent < 50]
 ```
 
 
