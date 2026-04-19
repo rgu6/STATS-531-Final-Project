@@ -76,9 +76,9 @@ Participants wear devices from Garmin, Fitbit, and Apple, and some individuals m
 
 ## Multiple Device Analysis
 
-For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device.
+For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device. A significant portion of people use multiple devices as can be seen in the table below.
 
-The data contains hourly Fitbit wearable data from July 1, 2024 to September 30, 2024 for 99 participants.These participants were included only if they had Fitbit data and had at least one day during the 90-day period with more than 12 hours of recorded step data. We consider 12 hours of data in the next 24 hours as enough to say that the data "wasn't missing" to construct the reward. From the original 299 Fitbit users in the data, we narrowed down the participants to 99. Additionally, 55 participants have at least 50% of hours with a fitbit step count recorded.
+
 
 <!--
 | Apple | Fitbit | Garmin | Apple + Fitbit | Fitbit + Garmin | Apple + Garmin | All Three | Total
@@ -87,18 +87,12 @@ The data contains hourly Fitbit wearable data from July 1, 2024 to September 30,
 :  {#tbl-letters}
 -->
 
-- double check number of users for each device
+(PRUNE FitbitHourly.csv to only July 1 to September 30, readjust back to local time)
+
+The FitbitHourly.csv dataset contains wearable data from July 1, 2024 to September 30, 2024 for 299 participants. We analyze the 78 participants who have Fitbit steps data for at least half of their hourly rows. 
 
 Notes:
-* Justify why Fitbit only
-(Garmin is not used a lot. Apple is actually HealthKit, which is a mixture of phone data and watch data; additionally, the healthkit can integrate with other wearables such as Garmin, so the steps data may not even originate from Apple watch. It's too difficult to disentangle the biases on this device)
-* Justify using 99 Fitbit people, and how much missingness (we consider a reward (24hoursteps after the decision point) missing if there's no observed data in more than 12 of the hourly buckets. We only use participants with at least one day of not-missing reward.)
-* sample statistics like mean, std
-* eda plots and summary statistics
-  + sample size (~1000 doctors)
-  + percent of users using each device (88 garmin, 800 apple, 299 fitbit)
-    + we are focusing on participants that use fitbit but will use info provided by other devices if necessary
-  + missing data
+* sample statistics like mean steps, std, mean steps per hourly non-missing bucket, missingness, maybe box plot for missingness (min, max, quartiles).
 
 ```{python}
 # | echo: false
@@ -291,29 +285,11 @@ This is some UM-GPT code that is trying to plot the distribution of percent miss
 ```
 
 
-## Design Decisions (maybe combine with Data Description and Preprocessing)
-
-need to define buckets (user, hour) -> are we dividing the day up into thirds or keeping the 24 hours (UDPATE: using 24 hours for the buckets which makes it easier to define missingness)
-
-how much data needs to be missing to be considered "missing" for each bucket
-
-Benchmark test:
-Mask a percentage of the data (uniformly random missing hourly buckets, or uniformly random missing whole days of data), fit the smoother on both the masked data and unmasked data, calculate the RMSE for each. Run this across multiple fractions of missing data; i.e. if $m$ is the fraction of the data we mask, then we might sweep across $m = 0.1, 0.2, 0.3, 0.4, 0.5$ and see what the relationship is between amount of artificial missingness, actual missingness, performance of the smoother and filter in both settings, for each participant. Try this with individual models, and with a joint panel pomp.
-
-CANDIDATE BENCHMARKS:
-1) RMSE across a participant's time series for masked and unmasked models vs observed data. How much RMSE do we gain when masked?
-2) RMSE across only the masked data, for masked and unmasked models. How much RMSE do we increase when masked?
-3) Define ERROR as "difference between masked model and unmasked model" = ActualLatent - PredictedLatent where ActualLatent is the latent estimated without masking
-
-## Limitations of Benchmark
-
-# Methodology and Results
-
-
 
 ### Model
 
-Model:
+Our aim is to predict the "24-hour-reward", the sum of the steps in the 24 hours after 3pm local time. Each of these hours is a bucket, where the Fitbit data may be observed, or it may be missing, which we model with a Partially Observed Markov Process (POMP) model. We try several configurations and benchmark them, but they all descend from the following design:
+
 Latent process:
 $$
 x_{t+1} = \phi x_t + \sigma \epsilon_t, 
@@ -325,16 +301,7 @@ N_t | x_t \sim \text{Poisson}(\lambda, t),
 $$
 
 $$
-Y^F_t | N_t \sim \text{NegBin}(N_t, k_F)
-$$
-
-$$
-Y^A_t | N_t \sim \text{NegBin}(q_A N_t, k_A)
-$$
-
-
-$$
-Y^G_t | N_t \sim \text{NegBin}(q_G N_t, k_G)
+Y_t | N_t \sim \text{NegBin}(N_t, k)
 $$
 
 Our aim is to estimate the step count 24 hours after 3pm local time each day:
@@ -346,15 +313,37 @@ The latent time model is a simple AR(1). The other components of the $\lambda_t$
 
 Because $\log \lambda_t$ is a linear model, we'll do variable selection for the features chosen in $z_t$ via a linear model. Specifically, we'll do it in a personalized way across all participants, using LASSO. Across a large set of candidate features, run a regression, use cross validation to pick the best penalty value. The variables which vanish under this penalty we don't pick, the variables which stay, we do pick. We run this across all participants being studied, so each user has a personalized feature set.
 
-In the observation distributions, picking $k_F$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t^F | N_t) = N_t + \frac{N^2_t}{k_F}$. When $k_F \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k_F$ large, we have Poisson distribution. But from running a few of these, $k_F$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
+In the observation distributions, picking $k$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t | N_t) = N_t + \frac{N^2_t}{k}$. When $k \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k$ large, we have Poisson distribution. But from running a few of these, $k$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
 
-Our interpretation of $k_F$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k_F \sim N(\mu_F, \sigma^2_F)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k_F$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
+Our interpretation of $k$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k \sim N(\mu_F, \sigma^2)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
 
-The $k_A$ and $k_G$ are basically the same estimation problem. We have other pools of participants that we can estimate them with, but those might be related to their -own- latent distributions, which is related to this problem of estimating $q_A$ and $q_G$. We aren't sure if we're even incorporating other devices, so this is lower priority. In a nutshell, we can try to estimate $q_A$ by checking hourly buckets with overlap between Fitbit and Apple, and try to see if there's a strong correlation. The $q_A$ would be the regression coefficient, perhaps the uncertainty from the regression or $R^2$ can be pushed through into the variance of the measurement distribution.
+ALSO try ARMA
+
+(EXPLAIN other model configurations)
+
+
+
+### Benchmarks
+
+Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation).
+
+Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, data. (We also observe how different levels of masking affect the result).
+
+For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
+
+## Limitations of Benchmark
+
+# Methodology and Results
+
+
+
+
 
 ## Individual
 
 Here is what it looks like to run this model on an individual
+
+(ADD Parameter start box for other models)
 
 ```{python}
 #| warning: false
@@ -2390,40 +2379,59 @@ ax.set_xticks(np.arange(0, 25, 1))
 plt.tight_layout()
 plt.show()
 ```
+
+
+Notice that the estimated latent reward always upper bounds the observed reward. This is because it's a sum of hourly buckets, for which many of the observations are missing. The second plot (maybe include a trend line?) shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is the point of using a latent model to begin-with, we expect that there are many steps the participant is taking that aren't being picked up. However, this introduces great challenges in benchmarking (elaborate on challenges?).
+
+Maybe do for three participants? Low medium high missingness.
+
 ## Aggregate modeling
 
-Small panel pomp explanation with citation
+Small panel pomp explanation with citation. Use the same global search settings as above but for everyone.
 
-
-
-
-
-### Global Search
-
-Describe the parameters used
+Explain the $k$ partial pooling and equation.
 
 ## Diagnostics
 
-Even without panel pomp, we do big aggregate models. Aggregate testing RMSE vs missingness across all the participants. This is useful pedagogically but not explicitly for prediction. If we run out of space, this would be good in supplemental material.
+Aggregate testing RMSE vs missingness across all the participants. This is useful pedagogically but not explicitly for prediction. If we run out of space, this would be good in supplemental material.
 
 Aggregate parameter estimates ($\phi, \sigma, k_F$ for each participant averaged, std deviation too)
-
-Show what models look like with high missingness vs low missingness, and the problem of divergence when there's big contiguous missing chunks
-
 
 Benchmarking
 
 List of models to try:
+
 ARMA
-AR(1) latent x
-AR(2) latent x
-AR(1) + 24-hour-lag latent x
-AR(2) + 24-hour-lag latent x
-alpha and delta baselines empirical vs continuous
-Potentially covariates like max heartrate last 24hours
+AR(1) x
+  missingness latent*
+  missingness observe*
+  k global pool
+  k partial pool
+AR(2) x
+  k global pool
+  k partial pool
+  missingness latent*
+  missingness observe*
 
 
-If we get the chance, partial pooling panel pomp with a $k_F$ from a shared distribution.
+Prioritize
+ARMA
+AR(1)
+AR(2)
+AR(1) + global pool
+AR(1) + partial pool
+
+Analysis of results:
+Display by model, averaged across users:
+log likelihood
+each model paramater
+benchmark 1, 2, 3
+
+Say something about it!
+
+
+If time allows:
+For best model, do the hourly RMSE vs masking for different levels of masking
 
 # Conclusion
 
@@ -2432,7 +2440,7 @@ paragraph 1: summary of the analysis that was done
 paragraph 2: limitations, direction for future analysis, wrap up sentence
 
 Limitations:
-Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good.  Partial pooling of k_fitbit because we suspect that it should be a device-centric parameter. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules).
+Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules). Models we didn't get to try. How much masking affects performance. Different ways of doing masking (contiguous, across whole days, totally random, etc).
 
 # Contributions
 - Group Member 1: 
