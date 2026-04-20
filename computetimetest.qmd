@@ -1,0 +1,370 @@
+---
+title: "Compute Time Benchmark Harness"
+params:
+  device: "gpu"                 # cpu | gpu
+  benchmark_tag: "gpu_default"
+  scenario_set: "quick"         # quick | extended
+  request_file: null            # optional saved estimator request JSON under cache/computetimetest/requests
+  request_mode: "append"        # append | request_only
+  cache_version: "v1"
+  analysis_start_utc_iso: "2024-07-01T00:00:00+00:00"
+  analysis_end_utc_iso: "2024-09-30T23:00:00+00:00"
+  assumed_local_timezone: "America/New_York"
+  missing_fraction: 0.20
+  mask_seed: 531
+  global_seed: 531
+  covariate_mode: "none"
+  force_recompute: false
+execute:
+  echo: false
+  warning: false
+  message: false
+format:
+  pdf:
+    include-in-header:
+      text: |
+        \usepackage{fullpage}
+number-sections: true
+---
+
+## Purpose
+
+This document runs a small, curated set of GPU timing benchmarks on the CSV-only pipeline. The benchmark harness is inference-focused: it measures panel search / fitting time and skips the post-fit reconstruction path used only for downstream plots and held-out benchmark tables. It writes raw timing rows and a calibrated runtime table under `cache/computetimetest/...`, then renders compact summaries of what was measured.
+
+```{python}
+#| tags: [parameters]
+
+device = "gpu"
+benchmark_tag = "gpu_default"
+scenario_set = "quick"
+request_file = None
+request_mode = "append"
+cache_version = "v1"
+analysis_start_utc_iso = "2024-07-01T00:00:00+00:00"
+analysis_end_utc_iso = "2024-09-30T23:00:00+00:00"
+assumed_local_timezone = "America/New_York"
+missing_fraction = 0.20
+mask_seed = 531
+global_seed = 531
+covariate_mode = "none"
+force_recompute = False
+```
+
+```{python}
+#| label: benchmark-interface
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+import yaml
+from IPython.display import display
+
+
+PROJECT_ROOT = Path.cwd().resolve()
+APP_CODE_ROOT = PROJECT_ROOT.parent / "eda"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(APP_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_CODE_ROOT))
+
+from src.ihs_eda.step_pomp import load_runtime_estimate_request, resolve_benchmark_request_path
+
+
+def _raw_params() -> dict:
+    parameter_keys = [
+        "device",
+        "benchmark_tag",
+        "scenario_set",
+        "request_file",
+        "request_mode",
+        "cache_version",
+        "analysis_start_utc_iso",
+        "analysis_end_utc_iso",
+        "assumed_local_timezone",
+        "missing_fraction",
+        "mask_seed",
+        "global_seed",
+        "covariate_mode",
+        "force_recompute",
+    ]
+    injected = {key: globals()[key] for key in parameter_keys if key in globals()}
+    if injected:
+        return injected
+    try:
+        raw = dict(params)
+        if raw:
+            return raw
+    except Exception:
+        pass
+    qmd_path = PROJECT_ROOT / "computetimetest.qmd"
+    text = qmd_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+    end_idx = text.find("\n---", 4)
+    if end_idx < 0:
+        return {}
+    frontmatter = yaml.safe_load(text[4:end_idx]) or {}
+    params_block = frontmatter.get("params", {})
+    return dict(params_block) if isinstance(params_block, dict) else {}
+
+
+def _resolve_params(raw: dict[str, object]) -> dict[str, object]:
+    def _as_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    resolved = dict(raw)
+    resolved["device"] = str(resolved.get("device", "gpu")).strip().lower()
+    resolved["benchmark_tag"] = str(resolved.get("benchmark_tag", "gpu_default")).strip()
+    resolved["scenario_set"] = str(resolved.get("scenario_set", "quick")).strip().lower()
+    resolved["cache_version"] = str(resolved.get("cache_version", "v1")).strip()
+    request_file_value = resolved.get("request_file")
+    resolved["request_file"] = None if request_file_value in {None, "", "null"} else str(request_file_value).strip()
+    resolved["request_mode"] = str(resolved.get("request_mode", "append")).strip().lower()
+    resolved["analysis_start_utc_iso"] = str(resolved.get("analysis_start_utc_iso"))
+    resolved["analysis_end_utc_iso"] = str(resolved.get("analysis_end_utc_iso"))
+    resolved["assumed_local_timezone"] = str(resolved.get("assumed_local_timezone", "America/New_York")).strip()
+    resolved["missing_fraction"] = float(resolved.get("missing_fraction", 0.20))
+    resolved["mask_seed"] = int(resolved.get("mask_seed", 531))
+    resolved["global_seed"] = int(resolved.get("global_seed", 531))
+    resolved["covariate_mode"] = str(resolved.get("covariate_mode", "none")).strip()
+    resolved["force_recompute"] = _as_bool(resolved.get("force_recompute", False))
+    return resolved
+
+
+resolved_params = _resolve_params(_raw_params())
+requested_device = resolved_params["device"]
+os.environ["JAX_PLATFORMS"] = "cuda" if requested_device == "gpu" else "cpu"
+imported_request_payload = None
+if resolved_params["request_file"]:
+    request_path = resolve_benchmark_request_path(PROJECT_ROOT, resolved_params["request_file"])
+    imported_request_payload = load_runtime_estimate_request(request_path)
+
+CSV_PATH = PROJECT_ROOT / "FitbitHourly.csv"
+if not CSV_PATH.exists():
+    raise FileNotFoundError("FitbitHourly.csv must be in the same folder as computetimetest.qmd.")
+
+
+def _display_table(df: pd.DataFrame, *, precision: int = 3) -> None:
+    display(df.style.hide(axis="index").format(precision=precision, na_rep=""))
+
+
+settings_table = pd.DataFrame(
+    [{"Setting": key, "Value": value} for key, value in resolved_params.items()]
+)
+_display_table(settings_table, precision=4)
+if imported_request_payload is not None:
+    request_settings = imported_request_payload.get("request", {})
+    imported_request_table = pd.DataFrame(
+        [
+            {"Setting": "request_hash", "Value": imported_request_payload.get("request_hash")},
+            {"Setting": "label", "Value": imported_request_payload.get("label")},
+            {"Setting": "model_families", "Value": ", ".join(request_settings.get("model_families", []))},
+            {"Setting": "pooling_modes", "Value": ", ".join(request_settings.get("pooling_modes", []))},
+            {"Setting": "participant_count", "Value": request_settings.get("participant_count")},
+            {"Setting": "participants_per_batch", "Value": request_settings.get("participants_per_batch")},
+            {"Setting": "fit_scope", "Value": request_settings.get("fit_scope")},
+            {"Setting": "masking_replicates", "Value": request_settings.get("masking_replicates")},
+            {"Setting": "window_days", "Value": request_settings.get("window_days")},
+        ]
+    )
+    _display_table(imported_request_table, precision=4)
+```
+
+```{python}
+#| label: benchmark-run
+
+import jax
+
+from helpers.computetimetest_benchmarks import run_timing_benchmark_suite
+
+
+backend = str(jax.default_backend())
+devices = [device.platform for device in jax.devices()]
+if requested_device == "gpu":
+    if backend != "gpu" or "gpu" not in devices:
+        raise RuntimeError(
+            "device='gpu' was requested, but JAX did not initialize a GPU backend. "
+            f"default_backend={backend!r}, devices={devices!r}"
+        )
+elif backend != "cpu":
+    raise RuntimeError(
+        "device='cpu' was requested, but JAX initialized a different backend. "
+        f"default_backend={backend!r}"
+    )
+
+
+def _progress(message: str) -> None:
+    print(message, flush=True)
+
+
+benchmark_result = run_timing_benchmark_suite(
+    CSV_PATH,
+    project_root=PROJECT_ROOT,
+    benchmark_tag=resolved_params["benchmark_tag"],
+    scenario_set=resolved_params["scenario_set"],
+    device=requested_device,
+    cache_version=resolved_params["cache_version"],
+    analysis_start_utc_iso=resolved_params["analysis_start_utc_iso"],
+    analysis_end_utc_iso=resolved_params["analysis_end_utc_iso"],
+    assumed_local_timezone=resolved_params["assumed_local_timezone"],
+    missing_fraction=resolved_params["missing_fraction"],
+    mask_seed=resolved_params["mask_seed"],
+    global_seed=resolved_params["global_seed"],
+    covariate_mode=resolved_params["covariate_mode"],
+    force_recompute=resolved_params["force_recompute"],
+    request_payload=imported_request_payload,
+    request_mode=resolved_params["request_mode"],
+    inference_only=True,
+    progress_callback=_progress,
+)
+
+manifest = benchmark_result["manifest"]
+raw_timings = benchmark_result["raw_timings"]
+calibration = benchmark_result["calibration"]
+scenario_summary = benchmark_result["scenario_summary"]
+request_validation = benchmark_result["request_validation"]
+
+run_info = pd.DataFrame(
+    [
+        {
+            "run_dir": str(benchmark_result["run_dir"]),
+            "raw_timings_path": manifest["raw_timings_path"],
+            "calibration_path": manifest["calibration_path"],
+            "scenario_summary_path": manifest["scenario_summary_path"],
+            "device": manifest["device"],
+            "jax_backend": manifest["jax_backend"],
+            "n_scenarios": manifest["n_scenarios"],
+            "n_rows": manifest["n_rows"],
+        }
+    ]
+)
+```
+
+## Run Output
+
+```{python}
+#| label: benchmark-run-output
+
+_display_table(run_info)
+```
+
+## Scenario Timings
+
+```{python}
+#| label: benchmark-scenarios
+
+scenario_display = scenario_summary.copy()
+if not scenario_display.empty:
+    scenario_display["inference_seconds"] = pd.to_numeric(scenario_display["inference_fit_seconds"], errors="coerce")
+    scenario_display["benchmark_harness_seconds"] = pd.to_numeric(scenario_display["full_wall_seconds"], errors="coerce")
+    scenario_display["auxiliary_seconds"] = pd.to_numeric(scenario_display["auxiliary_artifact_seconds"], errors="coerce")
+    scenario_display["search_seconds"] = pd.to_numeric(scenario_display["panel_global_search_seconds"], errors="coerce")
+    scenario_display["postfit_seconds"] = pd.to_numeric(scenario_display["postfit_filter_total_seconds"], errors="coerce")
+    scenario_display["postfit_fit_seconds"] = pd.to_numeric(scenario_display["postfit_fit_seconds"], errors="coerce")
+    scenario_display["postfit_host_seconds"] = pd.to_numeric(scenario_display["postfit_host_overhead_seconds"], errors="coerce")
+    scenario_display["fit_unattributed_seconds"] = pd.to_numeric(scenario_display["fit_unattributed_seconds"], errors="coerce")
+    scenario_display["prep_seconds"] = pd.to_numeric(scenario_display["data_prep_seconds"], errors="coerce")
+    scenario_display = scenario_display[
+        [
+            "scenario_id",
+            "model_family",
+            "pooling_mode",
+            "fit_mode",
+            "participant_count",
+            "panel_batch_size",
+            "stage_profile",
+            "inference_seconds",
+            "benchmark_harness_seconds",
+            "auxiliary_seconds",
+            "search_seconds",
+            "postfit_seconds",
+            "postfit_fit_seconds",
+            "postfit_host_seconds",
+            "fit_unattributed_seconds",
+            "prep_seconds",
+            "mask_build_seconds",
+            "benchmark_build_seconds",
+            "warm_start_used",
+        ]
+    ]
+_display_table(scenario_display, precision=3)
+```
+
+## Calibration Summary
+
+```{python}
+#| label: benchmark-calibration
+
+calibration_display = calibration.copy()
+if not calibration_display.empty:
+    calibration_display = calibration_display[
+        [
+            "model_family",
+            "pooling_mode",
+            "fit_mode",
+            "n_runs",
+            "inference_fit_seconds_median",
+            "full_wall_seconds_median",
+            "auxiliary_artifact_seconds_median",
+            "search_seconds_per_batch_hour_unit_median",
+            "postfit_seconds_per_hour_eval_unit_median",
+            "data_prep_seconds_per_participant_hour_median",
+            "mask_build_seconds_per_participant_hour_median",
+            "benchmark_seconds_per_participant_hour_median",
+            "arma_seconds_per_participant_hour_median",
+        ]
+    ]
+_display_table(calibration_display, precision=6)
+```
+
+## Imported Request Validation
+
+```{python}
+#| label: benchmark-request-validation
+
+if request_validation.empty:
+    print("No imported estimator request was validated in this run.")
+else:
+    validation_display = request_validation.copy()
+    _display_table(validation_display, precision=4)
+```
+
+## Raw Timing Rows
+
+```{python}
+#| label: benchmark-raw
+
+raw_display = raw_timings.copy()
+if not raw_display.empty:
+    raw_display = raw_display[
+        [
+            "scenario_id",
+            "model_family",
+            "pooling_mode",
+            "fit_mode",
+            "participant_count",
+            "panel_batch_size",
+            "batch_count",
+            "hours_per_participant",
+            "search_work_units",
+            "inference_fit_seconds",
+            "full_wall_seconds",
+            "auxiliary_artifact_seconds",
+            "panel_global_search_seconds",
+            "postfit_filter_total_seconds",
+            "data_prep_seconds",
+            "mask_build_seconds",
+            "benchmark_build_seconds",
+            "fit_total_seconds",
+        ]
+    ]
+_display_table(raw_display, precision=4)
+```

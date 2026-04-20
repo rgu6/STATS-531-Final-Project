@@ -3,6 +3,60 @@ title: "Title of Project (TBD)\\vspace{-2cm}"
 bibliography: references.bib
 nocite: "@*"
 csl: ieee.csl
+params:
+  RL: 0
+  device: "gpu"
+  cache_mode: "prefer_cache"    # prefer_cache | recompute_missing_only | force_recompute
+  cache_version: "v1"
+  artifact_tag: "default"
+  participant_set: "small_set"
+  model_set: "smoke"            # smoke | core | all
+                                # smoke = ar1 + arma_aic
+                                # core/all = ar1, ar2, wear_observation, wear_latent,
+                                #            ar2_wear_observation, ar2_wear_latent, arma_aic
+  model_family: "ar1"
+                                # model_family options:
+                                #   "ar1"                  = AR(1) + empirical hour/day baseline
+                                #   "ar2"                  = AR(2) + empirical hour/day baseline
+                                #   "wear_observation"     = AR(1) + observation-level wear model
+                                #   "wear_latent"          = AR(1) + latent wear-state model
+                                #   "ar2_wear_observation" = AR(2) + observation-level wear model
+                                #   "ar2_wear_latent"      = AR(2) + latent wear-state model
+                                #   "arma_aic"             = ARMA(p, q) chosen by AIC for each participant
+  pooling_mode: "all"  # single mode, comma-separated string, YAML list, or "all"
+                                # pooling_mode options:
+                                #   "unit_specific"
+                                #   "global_shared_k"
+                                #   "partial_pooled_k"
+                                #   "all" = all three pooling modes above
+                                # example YAML list:
+                                # pooling_mode:
+                                #   - "unit_specific"
+                                #   - "global_shared_k"
+                                #   - "partial_pooled_k"
+  covariate_mode: "none"
+  mask_regime: "random_hours"
+  missing_fraction: 0.20
+  mask_seed: 531
+  n_mask_replicates: 1
+  fit_scope: "both"
+  section_scope: "all"
+  global_seed: 531
+  panel_chunk_size: null
+  stage1_starts: null
+  stage2_starts: null
+  stage1_keep_top: null
+  stage2_keep_top: null
+  stage1_particles: null
+  stage2_particles: null
+  stage1_if2_iterations: null
+  stage2_if2_iterations: null
+  cooling_fraction: null
+  rw_sd_scale: null
+  stage1_eval_particles: null
+  stage2_eval_particles: null
+  stage1_eval_reps: null
+  stage2_eval_reps: null
 execute:
   echo: false
 format:
@@ -19,6 +73,350 @@ number-sections: true
 [interface here:
 selects RL = 0, 1, or 2
 RL = 0 means]
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: compute-interface
+
+# COMPUTE INTERFACE / PARAMS
+# RL DEFAULTS AND RESOLVED CONFIG
+# DEVICE SETUP
+# EXPERIMENT REGISTRY
+
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+import yaml
+
+
+PROJECT_ROOT = Path.cwd().resolve()
+APP_CODE_ROOT = PROJECT_ROOT.parent / "eda"
+HELPERS_ROOT = PROJECT_ROOT / "helpers"
+
+if str(APP_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_CODE_ROOT))
+
+
+def _raw_params() -> dict:
+    try:
+        raw = dict(params)
+        if raw:
+            return raw
+    except Exception:
+        pass
+    qmd_path = PROJECT_ROOT / "computedraft.qmd"
+    if not qmd_path.exists():
+        raw = {}
+        return raw
+    try:
+        text = qmd_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            return {}
+        end_idx = text.find("\n---", 4)
+        if end_idx < 0:
+            return {}
+        frontmatter = yaml.safe_load(text[4:end_idx]) or {}
+        params_block = frontmatter.get("params", {})
+        return dict(params_block) if isinstance(params_block, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_rl_defaults(rl: int) -> dict[str, object]:
+    rl_int = int(rl)
+    shared = {
+        "cache_mode": "prefer_cache",
+        "cache_version": "v1",
+        "artifact_tag": "default",
+        "model_family": "ar1",
+        "pooling_mode": "unit_specific",
+        "covariate_mode": "none",
+        "mask_regime": "random_hours",
+        "missing_fraction": 0.20,
+        "mask_seed": 531,
+        "n_mask_replicates": 1,
+        "fit_scope": "both",
+        "section_scope": "all",
+        "global_seed": 531,
+        "analysis_start_utc_iso": "2024-07-01T00:00:00+00:00",
+        "analysis_end_utc_iso": "2024-09-30T23:00:00+00:00",
+        "assumed_local_timezone": "America/New_York",
+    }
+    presets = {
+        0: {
+            **shared,
+            "RL": 0,
+            "device": "cpu",
+            "participant_set": "small_set",
+            "model_set": "smoke",
+            "panel_chunk_size": 1,
+            "stage1_starts": 1,
+            "stage2_starts": 1,
+            "stage1_keep_top": 1,
+            "stage2_keep_top": 1,
+            "stage1_particles": 20,
+            "stage2_particles": 20,
+            "stage1_if2_iterations": 1,
+            "stage2_if2_iterations": 1,
+            "cooling_fraction": 0.50,
+            "rw_sd_scale": 0.02,
+            "stage1_eval_particles": 20,
+            "stage2_eval_particles": 20,
+            "stage1_eval_reps": 1,
+            "stage2_eval_reps": 1,
+        },
+        1: {
+            **shared,
+            "RL": 1,
+            "device": "gpu",
+            "participant_set": "full_set",
+            "model_set": "core",
+            "panel_chunk_size": 4,
+            "stage1_starts": 4,
+            "stage2_starts": 2,
+            "stage1_keep_top": 2,
+            "stage2_keep_top": 1,
+            "stage1_particles": 60,
+            "stage2_particles": 100,
+            "stage1_if2_iterations": 2,
+            "stage2_if2_iterations": 4,
+            "cooling_fraction": 0.50,
+            "rw_sd_scale": 0.02,
+            "stage1_eval_particles": 80,
+            "stage2_eval_particles": 120,
+            "stage1_eval_reps": 1,
+            "stage2_eval_reps": 1,
+        },
+        2: {
+            **shared,
+            "RL": 2,
+            "device": "gpu",
+            "participant_set": "full_set",
+            "model_set": "core",
+            "panel_chunk_size": 4,
+            "stage1_starts": 10,
+            "stage2_starts": 4,
+            "stage1_keep_top": 3,
+            "stage2_keep_top": 2,
+            "stage1_particles": 100,
+            "stage2_particles": 160,
+            "stage1_if2_iterations": 4,
+            "stage2_if2_iterations": 8,
+            "cooling_fraction": 0.50,
+            "rw_sd_scale": 0.02,
+            "stage1_eval_particles": 200,
+            "stage2_eval_particles": 320,
+            "stage1_eval_reps": 2,
+            "stage2_eval_reps": 3,
+        },
+    }
+    if rl_int not in presets:
+        raise ValueError(f"Unsupported RL preset: {rl}")
+    return presets[rl_int]
+
+
+def resolve_config(raw_params: dict[str, object]) -> dict[str, object]:
+    defaults = get_rl_defaults(int(raw_params.get("RL", 0)))
+    resolved = dict(defaults)
+    for key, value in raw_params.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        resolved[key] = value
+    resolved["RL"] = int(resolved["RL"])
+    resolved["missing_fraction"] = float(resolved["missing_fraction"])
+    resolved["mask_seed"] = int(resolved["mask_seed"])
+    resolved["n_mask_replicates"] = int(resolved["n_mask_replicates"])
+    resolved["global_seed"] = int(resolved["global_seed"])
+    if resolved.get("panel_chunk_size") is not None:
+        resolved["panel_chunk_size"] = int(resolved["panel_chunk_size"])
+    for name in (
+        "stage1_starts",
+        "stage2_starts",
+        "stage1_keep_top",
+        "stage2_keep_top",
+        "stage1_particles",
+        "stage2_particles",
+        "stage1_if2_iterations",
+        "stage2_if2_iterations",
+        "stage1_eval_particles",
+        "stage2_eval_particles",
+        "stage1_eval_reps",
+        "stage2_eval_reps",
+    ):
+        if resolved.get(name) is not None:
+            resolved[name] = int(resolved[name])
+    for name in ("cooling_fraction", "rw_sd_scale"):
+        if resolved.get(name) is not None:
+            resolved[name] = float(resolved[name])
+    return resolved
+
+
+RAW_PARAMS = _raw_params()
+RESOLVED_CONFIG = resolve_config(RAW_PARAMS)
+
+MODEL_SET_REGISTRY = {
+    "smoke": ["ar1", "arma_aic"],
+    "core": [
+        "ar1",
+        "ar2",
+        "wear_observation",
+        "wear_latent",
+        "ar2_wear_observation",
+        "ar2_wear_latent",
+        "arma_aic",
+    ],
+    "all": [
+        "ar1",
+        "ar2",
+        "wear_observation",
+        "wear_latent",
+        "ar2_wear_observation",
+        "ar2_wear_latent",
+        "arma_aic",
+    ],
+}
+
+POOLING_MODE_OPTIONS = [
+    "unit_specific",
+    "global_shared_k",
+    "partial_pooled_k",
+]
+
+GLOBAL_START_BOX_DEFAULTS = {
+    "phi": (-0.95, 0.95),
+    "phi1": (-1.25, 1.25),
+    "phi2": (-0.99, 0.99),
+    "phi24": (-0.99, 0.99),
+    "sigma": (0.05, 2.00),
+    "k_fitbit": (0.0001, 400.0),
+    "log_k_fitbit": (-9.21, 5.99),
+    "mu_log_k_fitbit": (-9.21, 5.99),
+    "log_tau_log_k_fitbit": (-6.0, 1.5),
+    "eta_wear_lag1": (-4.0, 4.0),
+    "wear_phi": (-0.99, 0.99),
+    "wear_sigma": (0.05, 2.0),
+}
+
+# Edit this dict in the qmd when you want model-specific search windows to differ
+# from the defaults above without changing the cache key schema.
+PARAMETER_WINDOW_OVERRIDES: dict[str, tuple[float, float]] = {}
+
+
+def _active_model_families(config: dict[str, object]) -> list[str]:
+    model_set_name = str(config["model_set"])
+    if model_set_name not in MODEL_SET_REGISTRY:
+        raise ValueError(f"Unknown model_set: {model_set_name}")
+    families = list(MODEL_SET_REGISTRY[model_set_name])
+    requested_family = str(config["model_family"])
+    if requested_family not in families:
+        families.append(requested_family)
+    return families
+
+
+def _active_pooling_modes(config: dict[str, object]) -> list[str]:
+    raw_value = config.get("pooling_mode", "unit_specific")
+    if isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if stripped.lower() == "all":
+            requested = list(POOLING_MODE_OPTIONS)
+        elif "," in stripped:
+            requested = [part.strip() for part in stripped.split(",") if part.strip()]
+        else:
+            requested = [stripped]
+    elif isinstance(raw_value, (list, tuple, set)):
+        requested = [str(item).strip() for item in raw_value if str(item).strip()]
+    else:
+        requested = [str(raw_value).strip()]
+
+    active_modes: list[str] = []
+    for mode in requested:
+        if mode not in POOLING_MODE_OPTIONS:
+            raise ValueError(f"Unknown pooling_mode: {mode}")
+        if mode not in active_modes:
+            active_modes.append(mode)
+    if not active_modes:
+        raise ValueError("At least one pooling mode must be selected.")
+    return active_modes
+
+
+RESOLVED_CONFIG["active_model_families"] = _active_model_families(RESOLVED_CONFIG)
+RESOLVED_CONFIG["active_pooling_modes"] = _active_pooling_modes(RESOLVED_CONFIG)
+RESOLVED_CONFIG["search_windows"] = {
+    **GLOBAL_START_BOX_DEFAULTS,
+    **PARAMETER_WINDOW_OVERRIDES,
+}
+
+CACHE_ROOT = PROJECT_ROOT / "cache" / "computedraft" / str(RESOLVED_CONFIG["cache_version"]) / str(RESOLVED_CONFIG["artifact_tag"])
+CACHE_PATHS = {
+    "root": CACHE_ROOT,
+    "base": CACHE_ROOT / "base",
+    "masks": CACHE_ROOT / "masks",
+    "fits_unmasked": CACHE_ROOT / "fits" / "unmasked",
+    "fits_masked": CACHE_ROOT / "fits" / "masked",
+    "benchmarks": CACHE_ROOT / "benchmarks",
+    "derived": CACHE_ROOT / "derived",
+    "manifests": CACHE_ROOT / "manifests",
+    "logs": CACHE_ROOT / "logs",
+}
+for path in CACHE_PATHS.values():
+    path.mkdir(parents=True, exist_ok=True)
+HELPERS_ROOT.mkdir(parents=True, exist_ok=True)
+
+requested_device = str(RESOLVED_CONFIG["device"]).strip().lower()
+if requested_device not in {"cpu", "gpu"}:
+    raise ValueError(f"device must be 'cpu' or 'gpu', got {RESOLVED_CONFIG['device']!r}")
+# JAX wants concrete backend names here. In our WSL + NVIDIA setup, asking for
+# GPU should force CUDA rather than letting a stray ROCm probe interfere.
+os.environ["JAX_PLATFORMS"] = "cuda" if requested_device == "gpu" else "cpu"
+
+SEARCH_STAGE_SETTINGS = [
+    {
+        "name": "Stage 1",
+        "n_starts": int(RESOLVED_CONFIG["stage1_starts"]),
+        "keep_top": int(RESOLVED_CONFIG["stage1_keep_top"]),
+        "particles": int(RESOLVED_CONFIG["stage1_particles"]),
+        "mif_iterations": int(RESOLVED_CONFIG["stage1_if2_iterations"]),
+        "cooling_fraction": float(RESOLVED_CONFIG["cooling_fraction"]),
+        "rw_sd_scale": float(RESOLVED_CONFIG["rw_sd_scale"]),
+        "evaluation_particles": int(RESOLVED_CONFIG["stage1_eval_particles"]),
+        "evaluation_pfilter_reps": int(RESOLVED_CONFIG["stage1_eval_reps"]),
+        "n_fresh_random_starts": 0,
+        "n_jittered_restarts": 0,
+    },
+    {
+        "name": "Stage 2",
+        "n_starts": int(RESOLVED_CONFIG["stage2_starts"]),
+        "keep_top": int(RESOLVED_CONFIG["stage2_keep_top"]),
+        "particles": int(RESOLVED_CONFIG["stage2_particles"]),
+        "mif_iterations": int(RESOLVED_CONFIG["stage2_if2_iterations"]),
+        "cooling_fraction": float(RESOLVED_CONFIG["cooling_fraction"]),
+        "rw_sd_scale": float(RESOLVED_CONFIG["rw_sd_scale"]),
+        "evaluation_particles": int(RESOLVED_CONFIG["stage2_eval_particles"]),
+        "evaluation_pfilter_reps": int(RESOLVED_CONFIG["stage2_eval_reps"]),
+        "n_fresh_random_starts": 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0,
+        "n_jittered_restarts": 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0,
+    },
+]
+
+RESOLVED_CONFIG["config_hash"] = hashlib.sha256(
+    json.dumps(RESOLVED_CONFIG, sort_keys=True, default=str).encode("utf-8")
+).hexdigest()[:16]
+AGGREGATE_PROGRESS_LOG_PATH = CACHE_PATHS["logs"] / f"aggregate_progress_{RESOLVED_CONFIG['config_hash']}.jsonl"
+AGGREGATE_PROGRESS_MANIFEST_PATH = CACHE_PATHS["logs"] / f"aggregate_progress_manifest_{RESOLVED_CONFIG['config_hash']}.csv"
+
+resolved_config_table = pd.DataFrame(
+    [{"setting": key, "value": json.dumps(value, default=str) if isinstance(value, (dict, list, tuple)) else value} for key, value in RESOLVED_CONFIG.items()]
+)
+resolved_config_table.to_json(CACHE_PATHS["logs"] / f"resolved_config_{RESOLVED_CONFIG['config_hash']}.json", orient="records", indent=2)
+```
 
 # Introduction
 
@@ -357,16 +755,16 @@ Here is what it looks like to run this model on an individual
 # Cache controls
 enable_shelve_cache = True
 clear_shelve_cache = False
-cache_version_token = "highmiss_cache_v1"
+cache_version_token = f"highmiss_cache_{RESOLVED_CONFIG['cache_version']}"
 shelve_cache_directory = ".highmiss_cache"
-shelve_cache_basename = "highmiss_4796"
+shelve_cache_basename = f"highmiss_{RESOLVED_CONFIG['config_hash']}"
 
 # Participant and model controls
 participant_id = "MDH-3531-4796"
-analysis_start_utc_iso = "2024-07-01T00:00:00+00:00"
-analysis_end_utc_iso = "2024-09-30T23:00:00+00:00"
+analysis_start_utc_iso = str(RESOLVED_CONFIG["analysis_start_utc_iso"])
+analysis_end_utc_iso = str(RESOLVED_CONFIG["analysis_end_utc_iso"])
 participant_data_lookback_hours = 48
-assumed_local_timezone = "America/New_York"
+assumed_local_timezone = str(RESOLVED_CONFIG["assumed_local_timezone"])
 participant_covariate_keys = []  # Example: ["trail_steps_24h", "send_lag_0_3h"]
 estimated_free_params = ["phi", "sigma", "k_fitbit"]
 initial_phi = 0.75
@@ -374,53 +772,53 @@ initial_sigma = 0.30
 initial_k_fitbit = 200.0
 
 # Local MLE controls
-local_mle_particles = 100
-local_mle_mif_iterations = 6
-local_mle_random_seed = 11
-local_mle_cooling_fraction = 0.50
-local_mle_rw_sd_scale = 0.02
-local_mle_evaluation_particles = 100
-local_mle_evaluation_pfilter_reps = 3
+local_mle_particles = int(RESOLVED_CONFIG["stage1_particles"])
+local_mle_mif_iterations = int(RESOLVED_CONFIG["stage1_if2_iterations"])
+local_mle_random_seed = int(RESOLVED_CONFIG["global_seed"])
+local_mle_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
+local_mle_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+local_mle_evaluation_particles = int(RESOLVED_CONFIG["stage1_eval_particles"])
+local_mle_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage1_eval_reps"])
 
 # Global MLE search controls
-global_search_random_seed = 37
+global_search_random_seed = int(RESOLVED_CONFIG["global_seed"]) + 26
 global_search_include_current_theta_as_start = True
 global_search_jitter_scale = 0.10
 global_search_box_shrink_factor_per_stage = 1.00
 
 # Global MLE stage 1 controls
 global_stage1_name = "Stage 1"
-global_stage1_n_starts = 10
-global_stage1_keep_top = 3
-global_stage1_particles = 100
-global_stage1_mif_iterations = 4
-global_stage1_cooling_fraction = 0.50
-global_stage1_rw_sd_scale = 0.02
-global_stage1_evaluation_particles = 200
-global_stage1_evaluation_pfilter_reps = 2
+global_stage1_n_starts = int(RESOLVED_CONFIG["stage1_starts"])
+global_stage1_keep_top = int(RESOLVED_CONFIG["stage1_keep_top"])
+global_stage1_particles = int(RESOLVED_CONFIG["stage1_particles"])
+global_stage1_mif_iterations = int(RESOLVED_CONFIG["stage1_if2_iterations"])
+global_stage1_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
+global_stage1_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+global_stage1_evaluation_particles = int(RESOLVED_CONFIG["stage1_eval_particles"])
+global_stage1_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage1_eval_reps"])
 global_stage1_n_fresh_random_starts = 0
 global_stage1_n_jittered_restarts = 0
 
 # Global MLE stage 2 controls
 global_stage2_name = "Stage 2"
-global_stage2_n_starts = 4
-global_stage2_keep_top = 2
-global_stage2_particles = 160
-global_stage2_mif_iterations = 8
-global_stage2_cooling_fraction = 0.50
-global_stage2_rw_sd_scale = 0.015
-global_stage2_evaluation_particles = 320
-global_stage2_evaluation_pfilter_reps = 3
-global_stage2_n_fresh_random_starts = 1
-global_stage2_n_jittered_restarts = 1
+global_stage2_n_starts = int(RESOLVED_CONFIG["stage2_starts"])
+global_stage2_keep_top = int(RESOLVED_CONFIG["stage2_keep_top"])
+global_stage2_particles = int(RESOLVED_CONFIG["stage2_particles"])
+global_stage2_mif_iterations = int(RESOLVED_CONFIG["stage2_if2_iterations"])
+global_stage2_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
+global_stage2_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+global_stage2_evaluation_particles = int(RESOLVED_CONFIG["stage2_eval_particles"])
+global_stage2_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage2_eval_reps"])
+global_stage2_n_fresh_random_starts = 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0
+global_stage2_n_jittered_restarts = 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0
 
 # Global start-box controls
-global_start_box_phi_low = -0.95
-global_start_box_phi_high = 0.95
-global_start_box_sigma_low = 0.05
-global_start_box_sigma_high = 2.00
-global_start_box_k_fitbit_low = 1.0
-global_start_box_k_fitbit_high = 50.0
+global_start_box_phi_low = float(RESOLVED_CONFIG["search_windows"]["phi"][0])
+global_start_box_phi_high = float(RESOLVED_CONFIG["search_windows"]["phi"][1])
+global_start_box_sigma_low = float(RESOLVED_CONFIG["search_windows"]["sigma"][0])
+global_start_box_sigma_high = float(RESOLVED_CONFIG["search_windows"]["sigma"][1])
+global_start_box_k_fitbit_low = float(RESOLVED_CONFIG["search_windows"]["k_fitbit"][0])
+global_start_box_k_fitbit_high = float(RESOLVED_CONFIG["search_windows"]["k_fitbit"][1])
 
 # Reconstructed reward plot controls
 reward_plot_fit_source = "global"  # "local" or "global"
@@ -462,6 +860,29 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
 from pypomp import Pomp, ParTrans, RWSigma
+try:
+    from pypomp.random import fast_approx_rnbinom, fast_approx_rpoisson
+except Exception:
+    fast_approx_rnbinom = None
+    fast_approx_rpoisson = None
+
+FAST_QMD_SAMPLERS_AVAILABLE = bool(
+    fast_approx_rpoisson is not None and fast_approx_rnbinom is not None
+)
+
+JAX_BACKEND = str(jax.default_backend())
+if requested_device == "gpu":
+    gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+    if not gpu_devices or JAX_BACKEND != "gpu":
+        raise RuntimeError(
+            "device='gpu' was requested in computedraft.qmd, but JAX did not initialize a GPU backend. "
+            f"default_backend={JAX_BACKEND!r}, devices={[device.platform for device in jax.devices()]!r}"
+        )
+elif JAX_BACKEND != "cpu":
+    raise RuntimeError(
+        "device='cpu' was requested in computedraft.qmd, but JAX initialized a different backend. "
+        f"default_backend={JAX_BACKEND!r}"
+    )
 
 # CHANGE PATH
 CSV_PATH = Path("FitbitHourly.csv")
@@ -595,6 +1016,171 @@ def render_side_by_side_tables_latex(table_specs: list[dict]) -> str:
             )
         )
     return "\n\\hfill\n".join(rendered_blocks)
+
+
+def make_key_value_table(
+    mapping: dict[str, object],
+    *,
+    key_label: str = "Setting",
+    value_label: str = "Value",
+) -> pd.DataFrame:
+    """Render wide configuration dictionaries as narrow two-column tables."""
+    return pd.DataFrame(
+        [{key_label: str(key), value_label: value} for key, value in mapping.items()]
+    )
+
+
+def select_table_columns(
+    df: pd.DataFrame,
+    columns: list[str],
+    *,
+    rename: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Select only the columns that exist, optionally applying compact labels."""
+    available = [column for column in columns if column in df.columns]
+    if not available:
+        return pd.DataFrame()
+    selected = df.loc[:, available].copy()
+    if rename is not None:
+        selected = selected.rename(columns={key: value for key, value in rename.items() if key in selected.columns})
+    return selected
+
+
+def build_model_comparison_tables(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Split benchmark summaries into narrow tables that fit in the PDF."""
+    if df.empty:
+        return []
+    tables: list[tuple[str, pd.DataFrame]] = []
+    benchmark_column = "benchmark_label" if "benchmark_label" in df.columns else None
+    benchmark_groups = (
+        df.groupby(benchmark_column, dropna=False) if benchmark_column is not None else [("Benchmarks", df)]
+    )
+    rename = {
+        "model_family": "model",
+        "pooling_mode": "pooling",
+        "benchmark_key": "benchmark",
+        "benchmark_label": "benchmark",
+        "hourly_masked_rmse": "hourly RMSE",
+        "hourly_masked_mae": "hourly MAE",
+        "hourly_masked_correlation": "hourly corr",
+        "heldout_subtotal_rmse_sqrtm": "daily RMSE / sqrt(m)",
+        "mean_signed_subtotal_error": "mean subtotal err",
+        "mean_signed_normalized_subtotal_error": "mean norm err",
+        "n_windows_used": "windows",
+        "mean_masked_hours": "mean masked hrs",
+    }
+    for benchmark_label, benchmark_frame in benchmark_groups:
+        numeric_columns = [
+            column
+            for column in benchmark_frame.columns
+            if column not in {"model_family", "pooling_mode", "benchmark_key", "benchmark_label", "mask_id", "benchmark_version"}
+            and pd.api.types.is_numeric_dtype(pd.to_numeric(benchmark_frame[column], errors="coerce"))
+        ]
+        metric_chunks = [numeric_columns[index : index + 4] for index in range(0, len(numeric_columns), 4)] or [[]]
+        for chunk_index, metric_chunk in enumerate(metric_chunks, start=1):
+            columns = ["model_family", "pooling_mode", *metric_chunk]
+            table = select_table_columns(benchmark_frame, columns, rename=rename)
+            if table.empty:
+                continue
+            suffix = f" ({chunk_index})" if len(metric_chunks) > 1 else ""
+            title = f"{benchmark_label or 'Benchmarks'}{suffix}"
+            tables.append((title, table))
+    return tables
+
+
+def build_parameter_tables(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Split participant-level estimates into narrower thematic tables."""
+    if df.empty:
+        return []
+    frame = df.copy()
+    if "log_tau_log_k_fitbit" in frame.columns and "tau_log_k_fitbit" not in frame.columns:
+        frame["tau_log_k_fitbit"] = np.exp(pd.to_numeric(frame["log_tau_log_k_fitbit"], errors="coerce"))
+
+    rename = {
+        "participantidentifier": "participant_id",
+        "participant_id": "participant_id",
+        "model_family": "model",
+        "pooling_mode": "pooling",
+        "k_fitbit_pooling_mode": "k_pool",
+        "panel_unit_loglik": "loglik",
+        "log_k_fitbit": "log_k",
+        "mu_log_k_fitbit": "mu_log_k",
+        "tau_log_k_fitbit": "tau_log_k",
+        "log_tau_log_k_fitbit": "log_tau_k",
+        "arma_p": "AR p",
+        "arma_q": "MA q",
+        "aic": "AIC",
+    }
+    frame = frame.rename(columns={key: value for key, value in rename.items() if key in frame.columns})
+
+    blocks: list[tuple[str, pd.DataFrame]] = []
+    for title, columns in [
+        ("Participant fit summary", ["participant_id", "model", "pooling", "k_pool", "loglik"]),
+        ("Dynamic parameters", ["participant_id", "model", "sigma", "phi", "phi1", "phi2", "phi24"]),
+        ("Wear parameters", ["participant_id", "model", "wear_phi", "wear_sigma"]),
+        ("k-related parameters", ["participant_id", "model", "k_fitbit", "log_k", "mu_log_k", "tau_log_k"]),
+        ("ARMA parameters", ["participant_id", "model", "AR p", "MA q", "AIC", "loglik"]),
+    ]:
+        block = select_table_columns(frame, columns)
+        informative_cols = [column for column in block.columns if column not in {"participant_id", "model"}]
+        if not block.empty and informative_cols:
+            blocks.append((title, block))
+    return blocks
+
+
+def build_task_manifest_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Reduce the task manifest to the fields that matter in the report."""
+    if df.empty:
+        return df.copy()
+    frame = df.copy()
+    if "task_id" in frame.columns:
+        frame["task"] = (
+            frame["task_id"]
+            .astype(str)
+            .str.replace("::mask_rep_", " / rep ", regex=False)
+            .str.replace("::", " / ", regex=False)
+            .str.replace("benchmark", "bench", regex=False)
+            .str.replace("unmasked", "unmask", regex=False)
+            .str.replace("masked", "mask", regex=False)
+        )
+    if "mask_replicate" in frame.columns:
+        frame["mask_replicate"] = frame["mask_replicate"].fillna("—")
+    rename = {
+        "artifact_type": "artifact",
+        "model_family": "model",
+        "mask_replicate": "mask rep",
+        "benchmark_key": "benchmark",
+        "runtime_seconds": "runtime (s)",
+    }
+    return select_table_columns(
+        frame,
+        ["task", "artifact_type", "benchmark_key", "model_family", "mask_replicate", "status", "runtime_seconds"],
+        rename=rename,
+    )
+
+
+def build_timing_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep the timing summary compact for PDF output."""
+    if df.empty:
+        return df.copy()
+    rename = {
+        "model_family": "model",
+        "masked_runtime_seconds": "masked runtime (s)",
+        "unmasked_runtime_seconds": "unmasked runtime (s)",
+        "total_runtime_seconds": "total runtime (s)",
+        "artifact_size_mb": "size (MB)",
+    }
+    return select_table_columns(
+        df,
+        [
+            "model_family",
+            "unmasked_runtime_seconds",
+            "masked_runtime_seconds",
+            "total_runtime_seconds",
+            "artifact_size_mb",
+        ],
+        rename=rename,
+    )
 
 
 @dataclass(frozen=True)
@@ -1372,12 +1958,16 @@ def _build_par_trans(theta0: dict[str, float]) -> ParTrans:
 
 def _poisson_sample(key: jax.Array, mean: jax.Array) -> jax.Array:
     mean = jnp.maximum(mean, 1e-8)
+    if FAST_QMD_SAMPLERS_AVAILABLE and fast_approx_rpoisson is not None:
+        return fast_approx_rpoisson(key, mean)
     return jax.random.poisson(key, mean)
 
 
 def _nb_sample_mean_disp(key: jax.Array, mean: jax.Array, disp: jax.Array) -> jax.Array:
     mean = jnp.maximum(mean, 1e-8)
     disp = jnp.maximum(disp, 1e-6)
+    if FAST_QMD_SAMPLERS_AVAILABLE and fast_approx_rnbinom is not None:
+        return fast_approx_rnbinom(key, n=disp, mu=mean)
     key_gamma, key_poisson = jax.random.split(key)
     rate = jax.random.gamma(key_gamma, disp) * (mean / disp)
     return jax.random.poisson(key_poisson, rate)
@@ -2389,51 +2979,253 @@ Maybe do for three participants? Low medium high missingness.
 
 ## Aggregate modeling
 
-Small panel pomp explanation with citation. Use the same global search settings as above but for everyone.
+The aggregate analysis uses the same CSV as the individual section, but runs a cache-first panel pipeline. The expensive work is staged once here, and the visible tables and plots below only read cached or derived artifacts.
 
-Explain the $k$ partial pooling and equation.
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: aggregate-imports
+
+from helpers.computedraft_pipeline import run_cache_first_pipeline
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: aggregate-progress-setup
+
+# AGGREGATE PROGRESS SETUP
+# Long aggregate runs write a live JSONL event log plus a task-status CSV under
+# the cache logs directory. Tail these in a second terminal while Quarto runs.
+
+aggregate_progress_log_path = AGGREGATE_PROGRESS_LOG_PATH
+aggregate_progress_manifest_path = AGGREGATE_PROGRESS_MANIFEST_PATH
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: aggregate-compute
+
+# BIG COMPUTE CHUNK STARTS HERE
+# This is the only place in the report that is allowed to launch the aggregate
+# panel fits and masking benchmarks. All later chunks read the cached outputs.
+
+aggregate_config = dict(RESOLVED_CONFIG)
+aggregate_config["search_stage_settings"] = SEARCH_STAGE_SETTINGS
+
+aggregate_result = run_cache_first_pipeline(
+    CSV_PATH,
+    resolved_config=aggregate_config,
+    cache_paths=CACHE_PATHS,
+    active_model_families=list(aggregate_config["active_model_families"]),
+    active_pooling_modes=list(aggregate_config["active_pooling_modes"]),
+    progress_callback=lambda message: print(message, flush=True),
+)
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| label: aggregate-derived
+
+# DERIVED ARTIFACTS CHUNK
+# The objects below are what the visible diagnostic chunks consume. They are all
+# already cached or derived from cached fits above.
+
+aggregate_base_artifact = aggregate_result.base_artifact
+aggregate_task_manifest = aggregate_result.task_manifest.copy()
+aggregate_derived_artifact = aggregate_result.derived_artifact
+aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", pd.DataFrame()).copy()
+aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
+aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
+aggregate_timing_summary = aggregate_result.timing_summary.copy()
+
+aggregate_settings_table = pd.DataFrame(
+    [
+        {
+            "RL": aggregate_config["RL"],
+            "Device": aggregate_config["device"],
+            "Participant set": aggregate_config["participant_set"],
+            "Model set": aggregate_config["model_set"],
+            "Displayed model": aggregate_config["model_family"],
+            "Pooling": ", ".join(map(str, aggregate_config["active_pooling_modes"])),
+            "Covariates": aggregate_config["covariate_mode"],
+            "Mask regime": aggregate_config["mask_regime"],
+            "Missing fraction": aggregate_config["missing_fraction"],
+            "Mask replicates": aggregate_config["n_mask_replicates"],
+            "Stage 1 starts": aggregate_config["stage1_starts"],
+            "Stage 2 starts": aggregate_config["stage2_starts"],
+            "Stage 1 particles": aggregate_config["stage1_particles"],
+            "Stage 2 particles": aggregate_config["stage2_particles"],
+        }
+    ]
+)
+```
+
+```{python}
+#| echo: false
+#| label: aggregate-settings-table
+
+if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmarks_only", "plots_only"}:
+    aggregate_settings_display = make_key_value_table(
+        {
+            "RL": aggregate_config["RL"],
+            "Device": aggregate_config["device"],
+            "Participant set": aggregate_config["participant_set"],
+            "Model set": aggregate_config["model_set"],
+            "Displayed model": aggregate_config["model_family"],
+            "Pooling": ", ".join(map(str, aggregate_config["active_pooling_modes"])),
+            "Covariates": aggregate_config["covariate_mode"],
+            "Mask regime": aggregate_config["mask_regime"],
+            "Missing fraction": aggregate_config["missing_fraction"],
+            "Mask replicates": aggregate_config["n_mask_replicates"],
+            "Stage 1 starts": aggregate_config["stage1_starts"],
+            "Stage 2 starts": aggregate_config["stage2_starts"],
+            "Stage 1 particles": aggregate_config["stage1_particles"],
+            "Stage 2 particles": aggregate_config["stage2_particles"],
+        }
+    )
+    display_table(aggregate_settings_display, precision=3)
+```
+
+```{python}
+#| echo: false
+#| label: aggregate-cohort-summary
+
+cohort_summary_display = make_key_value_table(
+    {
+        "Full-set participants": len(aggregate_base_artifact.get("full_set_ids", [])),
+        "Small-set participants": len(aggregate_base_artifact.get("small_set_ids", [])),
+        "Selected participants": len(aggregate_derived_artifact.get("participant_ids", [])),
+        "Missingness-definition mismatches": int(len(aggregate_base_artifact.get("cohort_mismatch", pd.DataFrame()))),
+    }
+)
+display_table(cohort_summary_display, precision=2)
+```
+
+```{python}
+#| echo: false
+#| label: aggregate-model-comparison
+
+if aggregate_model_comparison.empty:
+    print("No aggregate benchmark summaries are available for the current fit_scope / section_scope configuration.")
+else:
+    comparison_display = aggregate_model_comparison.copy()
+    sort_columns = [
+        column
+        for column in ["benchmark_label", "heldout_subtotal_rmse_sqrtm", "hourly_masked_rmse", "model_family", "pooling_mode"]
+        if column in comparison_display.columns
+    ]
+    if sort_columns:
+        comparison_display = comparison_display.sort_values(
+            sort_columns,
+            ascending=[True] * len(sort_columns),
+            na_position="last",
+        ).reset_index(drop=True)
+    else:
+        comparison_display = comparison_display.reset_index(drop=True)
+    for table_title, table_frame in build_model_comparison_tables(comparison_display):
+        print(table_title)
+        display_table(table_frame, precision=3)
+```
 
 ## Diagnostics
 
-Aggregate testing RMSE vs missingness across all the participants. This is useful pedagogically but not explicitly for prediction. If we run out of space, this would be good in supplemental material.
+```{python}
+#| echo: false
+#| label: aggregate-parameter-table
 
-Aggregate parameter estimates ($\phi, \sigma, k_F$ for each participant averaged, std deviation too)
+if aggregate_parameter_summary.empty:
+    print("No participant-level parameter summary is available.")
+else:
+    selected_parameter_display = (
+        aggregate_parameter_summary.loc[
+            aggregate_parameter_summary["model_family"].astype(str) == str(aggregate_config["model_family"])
+        ]
+        .copy()
+        .reset_index(drop=True)
+    )
+    if selected_parameter_display.empty:
+        selected_parameter_display = aggregate_parameter_summary.copy()
+    for table_title, table_frame in build_parameter_tables(selected_parameter_display):
+        print(table_title)
+        display_table(table_frame, precision=3)
+```
 
-Benchmarking
+```{python}
+#| echo: false
+#| label: aggregate-task-manifest
 
-List of models to try:
+manifest_display = build_task_manifest_table(aggregate_task_manifest)
+display_table(manifest_display, precision=3)
+```
 
-ARMA
-AR(1) x
-  missingness latent*
-  missingness observe*
-  k global pool
-  k partial pool
-AR(2) x
-  k global pool
-  k partial pool
-  missingness latent*
-  missingness observe*
+```{python}
+#| echo: false
+#| label: aggregate-timing
 
+if aggregate_timing_summary.empty:
+    print("No timing summary has been recorded yet.")
+else:
+    display_table(build_timing_table(aggregate_timing_summary), precision=3)
+```
 
-Prioritize
-ARMA
-AR(1)
-AR(2)
-AR(1) + global pool
-AR(1) + partial pool
+```{python}
+#| echo: false
+#| label: aggregate-mismatch-report
 
-Analysis of results:
-Display by model, averaged across users:
-log likelihood
-each model paramater
-benchmark 1, 2, 3
+cohort_mismatch = aggregate_base_artifact.get("cohort_mismatch", pd.DataFrame()).copy()
+if cohort_mismatch.empty:
+    print("The CSV-based 50% Fitbit cohort agrees under both fitbitStepsMissing and fitbitSteps.notna() definitions.")
+else:
+    print("The CSV-based 50% Fitbit cohort differs depending on whether missingness is defined by fitbitStepsMissing or fitbitSteps.notna().")
+    display_table(cohort_mismatch, precision=4)
+```
 
-Say something about it!
+```{python}
+#| echo: false
+#| label: aggregate-benchmark-plot
 
-
-If time allows:
-For best model, do the hourly RMSE vs masking for different levels of masking
+if not aggregate_model_comparison.empty and str(aggregate_config["section_scope"]) in {"all", "benchmarks_only", "plots_only"}:
+    plot_df = aggregate_model_comparison.copy()
+    if "benchmark_label" in plot_df.columns and plot_df["benchmark_label"].notna().any():
+        selected_benchmark_label = str(plot_df["benchmark_label"].dropna().astype(str).iloc[0])
+        plot_df = plot_df.loc[plot_df["benchmark_label"].astype(str) == selected_benchmark_label].copy()
+    else:
+        selected_benchmark_label = "Aggregate benchmark comparison"
+    metric_column = "heldout_subtotal_rmse_sqrtm" if "heldout_subtotal_rmse_sqrtm" in plot_df.columns else None
+    if metric_column is None:
+        numeric_columns = [
+            column
+            for column in plot_df.columns
+            if column not in {"model_family", "pooling_mode", "benchmark_key", "benchmark_label"}
+            and pd.api.types.is_numeric_dtype(pd.to_numeric(plot_df[column], errors="coerce"))
+        ]
+        metric_column = numeric_columns[0] if numeric_columns else None
+    if metric_column is not None:
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        x_labels = plot_df["model_family"].astype(str)
+        if "pooling_mode" in plot_df.columns:
+            x_labels = x_labels + " / " + plot_df["pooling_mode"].astype(str)
+        ax.bar(
+            x_labels,
+            pd.to_numeric(plot_df[metric_column], errors="coerce"),
+            color="#d4a72c",
+            edgecolor="#7a5f12",
+        )
+        ylabel = "Held-out subtotal RMSE / sqrt(m)" if metric_column == "heldout_subtotal_rmse_sqrtm" else str(metric_column)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel("Model family / pooling")
+        ax.set_title(selected_benchmark_label)
+        ax.tick_params(axis="x", rotation=35)
+        plt.tight_layout()
+        plt.show()
+```
 
 # Conclusion
 
