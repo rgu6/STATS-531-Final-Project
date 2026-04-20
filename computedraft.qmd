@@ -9,7 +9,7 @@ params:
   cache_mode: "prefer_cache"    # prefer_cache | recompute_missing_only | force_recompute
   cache_version: "v1"
   artifact_tag: "default"
-  participant_set: "small_set"
+  participant_set: null         # null = RL preset default; "small_set" | "full_set"
   model_set: "smoke"            # smoke | core | all
                                 # smoke = ar1 + arma_aic
                                 # core/all = ar1, ar2, wear_observation, wear_latent,
@@ -42,7 +42,7 @@ params:
   fit_scope: "both"
   section_scope: "all"
   global_seed: 531
-  panel_chunk_size: null
+  panel_chunk_size: null       # participant batch size for panel fits; null = RL preset default
   stage1_starts: null
   stage2_starts: null
   stage1_keep_top: null
@@ -51,12 +51,46 @@ params:
   stage2_particles: null
   stage1_if2_iterations: null
   stage2_if2_iterations: null
-  cooling_fraction: null
-  rw_sd_scale: null
+  stage1_cooling_fraction: null
+  stage2_cooling_fraction: null
+  stage1_rw_sd_scale: null
+  stage2_rw_sd_scale: null
+  cooling_fraction: null       # shared fallback for both stages when stage-specific cooling is null
+  rw_sd_scale: null            # shared fallback for both stages when stage-specific RW scale is null
   stage1_eval_particles: null
   stage2_eval_particles: null
   stage1_eval_reps: null
   stage2_eval_reps: null
+  stage1_fresh_random_starts: null
+  stage2_fresh_random_starts: null
+  stage1_jittered_restarts: null
+  stage2_jittered_restarts: null
+  # Global search window overrides. Leave null to use the built-in defaults.
+  # Only parameters active in the selected model / pooling mode matter.
+  phi_window_low: null
+  phi_window_high: null
+  phi1_window_low: null
+  phi1_window_high: null
+  phi2_window_low: null
+  phi2_window_high: null
+  phi24_window_low: null
+  phi24_window_high: null
+  sigma_window_low: null
+  sigma_window_high: null
+  k_fitbit_window_low: null
+  k_fitbit_window_high: null
+  log_k_fitbit_window_low: null
+  log_k_fitbit_window_high: null
+  mu_log_k_fitbit_window_low: null
+  mu_log_k_fitbit_window_high: null
+  log_tau_log_k_fitbit_window_low: null
+  log_tau_log_k_fitbit_window_high: null
+  eta_wear_lag1_window_low: null
+  eta_wear_lag1_window_high: null
+  wear_phi_window_low: null
+  wear_phi_window_high: null
+  wear_sigma_window_low: null
+  wear_sigma_window_high: null
 execute:
   echo: false
 format:
@@ -73,6 +107,75 @@ number-sections: true
 [interface here:
 selects RL = 0, 1, or 2
 RL = 0 means]
+
+```{python}
+#| tags: [parameters]
+
+RL = 0
+device = "gpu"
+cache_mode = "prefer_cache"
+cache_version = "v1"
+artifact_tag = "default"
+participant_set = None
+model_set = "smoke"
+model_family = "ar1"
+pooling_mode = "all"
+covariate_mode = "none"
+mask_regime = "random_hours"
+missing_fraction = 0.20
+mask_seed = 531
+n_mask_replicates = 1
+fit_scope = "both"
+section_scope = "all"
+global_seed = 531
+panel_chunk_size = None
+stage1_starts = None
+stage2_starts = None
+stage1_keep_top = None
+stage2_keep_top = None
+stage1_particles = None
+stage2_particles = None
+stage1_if2_iterations = None
+stage2_if2_iterations = None
+stage1_cooling_fraction = None
+stage2_cooling_fraction = None
+stage1_rw_sd_scale = None
+stage2_rw_sd_scale = None
+cooling_fraction = None
+rw_sd_scale = None
+stage1_eval_particles = None
+stage2_eval_particles = None
+stage1_eval_reps = None
+stage2_eval_reps = None
+stage1_fresh_random_starts = None
+stage2_fresh_random_starts = None
+stage1_jittered_restarts = None
+stage2_jittered_restarts = None
+phi_window_low = None
+phi_window_high = None
+phi1_window_low = None
+phi1_window_high = None
+phi2_window_low = None
+phi2_window_high = None
+phi24_window_low = None
+phi24_window_high = None
+sigma_window_low = None
+sigma_window_high = None
+k_fitbit_window_low = None
+k_fitbit_window_high = None
+log_k_fitbit_window_low = None
+log_k_fitbit_window_high = None
+mu_log_k_fitbit_window_low = None
+mu_log_k_fitbit_window_high = None
+log_tau_log_k_fitbit_window_low = None
+log_tau_log_k_fitbit_window_high = None
+eta_wear_lag1_window_low = None
+eta_wear_lag1_window_high = None
+wear_phi_window_low = None
+wear_phi_window_high = None
+wear_sigma_window_low = None
+wear_sigma_window_high = None
+```
 
 ```{python}
 #| echo: false
@@ -104,6 +207,75 @@ if str(APP_CODE_ROOT) not in sys.path:
 
 
 def _raw_params() -> dict:
+    parameter_keys = [
+        "RL",
+        "device",
+        "cache_mode",
+        "cache_version",
+        "artifact_tag",
+        "participant_set",
+        "model_set",
+        "model_family",
+        "pooling_mode",
+        "covariate_mode",
+        "mask_regime",
+        "missing_fraction",
+        "mask_seed",
+        "n_mask_replicates",
+        "fit_scope",
+        "section_scope",
+        "global_seed",
+        "panel_chunk_size",
+        "stage1_starts",
+        "stage2_starts",
+        "stage1_keep_top",
+        "stage2_keep_top",
+        "stage1_particles",
+        "stage2_particles",
+        "stage1_if2_iterations",
+        "stage2_if2_iterations",
+        "stage1_cooling_fraction",
+        "stage2_cooling_fraction",
+        "stage1_rw_sd_scale",
+        "stage2_rw_sd_scale",
+        "cooling_fraction",
+        "rw_sd_scale",
+        "stage1_eval_particles",
+        "stage2_eval_particles",
+        "stage1_eval_reps",
+        "stage2_eval_reps",
+        "stage1_fresh_random_starts",
+        "stage2_fresh_random_starts",
+        "stage1_jittered_restarts",
+        "stage2_jittered_restarts",
+        "phi_window_low",
+        "phi_window_high",
+        "phi1_window_low",
+        "phi1_window_high",
+        "phi2_window_low",
+        "phi2_window_high",
+        "phi24_window_low",
+        "phi24_window_high",
+        "sigma_window_low",
+        "sigma_window_high",
+        "k_fitbit_window_low",
+        "k_fitbit_window_high",
+        "log_k_fitbit_window_low",
+        "log_k_fitbit_window_high",
+        "mu_log_k_fitbit_window_low",
+        "mu_log_k_fitbit_window_high",
+        "log_tau_log_k_fitbit_window_low",
+        "log_tau_log_k_fitbit_window_high",
+        "eta_wear_lag1_window_low",
+        "eta_wear_lag1_window_high",
+        "wear_phi_window_low",
+        "wear_phi_window_high",
+        "wear_sigma_window_low",
+        "wear_sigma_window_high",
+    ]
+    injected = {key: globals()[key] for key in parameter_keys if key in globals()}
+    if injected:
+        return injected
     try:
         raw = dict(params)
         if raw:
@@ -164,34 +336,51 @@ def get_rl_defaults(rl: int) -> dict[str, object]:
             "stage2_particles": 20,
             "stage1_if2_iterations": 1,
             "stage2_if2_iterations": 1,
+            "stage1_cooling_fraction": 0.50,
+            "stage2_cooling_fraction": 0.50,
+            "stage1_rw_sd_scale": 0.02,
+            "stage2_rw_sd_scale": 0.02,
             "cooling_fraction": 0.50,
             "rw_sd_scale": 0.02,
             "stage1_eval_particles": 20,
             "stage2_eval_particles": 20,
             "stage1_eval_reps": 1,
             "stage2_eval_reps": 1,
+            "stage1_fresh_random_starts": 0,
+            "stage2_fresh_random_starts": 0,
+            "stage1_jittered_restarts": 0,
+            "stage2_jittered_restarts": 0,
         },
         1: {
             **shared,
             "RL": 1,
             "device": "gpu",
             "participant_set": "full_set",
-            "model_set": "core",
-            "panel_chunk_size": 4,
-            "stage1_starts": 4,
-            "stage2_starts": 2,
+            "model_set": "smoke",
+            "pooling_mode": "all",
+            "panel_chunk_size": 78,
+            "stage1_starts": 10,
+            "stage2_starts": 5,
             "stage1_keep_top": 2,
             "stage2_keep_top": 1,
-            "stage1_particles": 60,
+            "stage1_particles": 100,
             "stage2_particles": 100,
-            "stage1_if2_iterations": 2,
-            "stage2_if2_iterations": 4,
-            "cooling_fraction": 0.50,
+            "stage1_if2_iterations": 5,
+            "stage2_if2_iterations": 5,
+            "stage1_cooling_fraction": 0.90,
+            "stage2_cooling_fraction": 0.90,
+            "stage1_rw_sd_scale": 0.02,
+            "stage2_rw_sd_scale": 0.015,
+            "cooling_fraction": 0.90,
             "rw_sd_scale": 0.02,
-            "stage1_eval_particles": 80,
-            "stage2_eval_particles": 120,
-            "stage1_eval_reps": 1,
-            "stage2_eval_reps": 1,
+            "stage1_eval_particles": 100,
+            "stage2_eval_particles": 100,
+            "stage1_eval_reps": 5,
+            "stage2_eval_reps": 5,
+            "stage1_fresh_random_starts": 0,
+            "stage2_fresh_random_starts": 0,
+            "stage1_jittered_restarts": 0,
+            "stage2_jittered_restarts": 1,
         },
         2: {
             **shared,
@@ -208,12 +397,20 @@ def get_rl_defaults(rl: int) -> dict[str, object]:
             "stage2_particles": 160,
             "stage1_if2_iterations": 4,
             "stage2_if2_iterations": 8,
+            "stage1_cooling_fraction": 0.50,
+            "stage2_cooling_fraction": 0.50,
+            "stage1_rw_sd_scale": 0.02,
+            "stage2_rw_sd_scale": 0.02,
             "cooling_fraction": 0.50,
             "rw_sd_scale": 0.02,
             "stage1_eval_particles": 200,
             "stage2_eval_particles": 320,
             "stage1_eval_reps": 2,
             "stage2_eval_reps": 3,
+            "stage1_fresh_random_starts": 0,
+            "stage2_fresh_random_starts": 1,
+            "stage1_jittered_restarts": 0,
+            "stage2_jittered_restarts": 1,
         },
     }
     if rl_int not in presets:
@@ -250,12 +447,63 @@ def resolve_config(raw_params: dict[str, object]) -> dict[str, object]:
         "stage2_eval_particles",
         "stage1_eval_reps",
         "stage2_eval_reps",
+        "stage1_fresh_random_starts",
+        "stage2_fresh_random_starts",
+        "stage1_jittered_restarts",
+        "stage2_jittered_restarts",
     ):
         if resolved.get(name) is not None:
             resolved[name] = int(resolved[name])
-    for name in ("cooling_fraction", "rw_sd_scale"):
+    for name in (
+        "cooling_fraction",
+        "rw_sd_scale",
+        "stage1_cooling_fraction",
+        "stage2_cooling_fraction",
+        "stage1_rw_sd_scale",
+        "stage2_rw_sd_scale",
+        "phi_window_low",
+        "phi_window_high",
+        "phi1_window_low",
+        "phi1_window_high",
+        "phi2_window_low",
+        "phi2_window_high",
+        "phi24_window_low",
+        "phi24_window_high",
+        "sigma_window_low",
+        "sigma_window_high",
+        "k_fitbit_window_low",
+        "k_fitbit_window_high",
+        "log_k_fitbit_window_low",
+        "log_k_fitbit_window_high",
+        "mu_log_k_fitbit_window_low",
+        "mu_log_k_fitbit_window_high",
+        "log_tau_log_k_fitbit_window_low",
+        "log_tau_log_k_fitbit_window_high",
+        "eta_wear_lag1_window_low",
+        "eta_wear_lag1_window_high",
+        "wear_phi_window_low",
+        "wear_phi_window_high",
+        "wear_sigma_window_low",
+        "wear_sigma_window_high",
+    ):
         if resolved.get(name) is not None:
             resolved[name] = float(resolved[name])
+    if resolved.get("stage1_cooling_fraction") is None:
+        resolved["stage1_cooling_fraction"] = float(resolved["cooling_fraction"])
+    if resolved.get("stage2_cooling_fraction") is None:
+        resolved["stage2_cooling_fraction"] = float(resolved["cooling_fraction"])
+    if resolved.get("stage1_rw_sd_scale") is None:
+        resolved["stage1_rw_sd_scale"] = float(resolved["rw_sd_scale"])
+    if resolved.get("stage2_rw_sd_scale") is None:
+        resolved["stage2_rw_sd_scale"] = float(resolved["rw_sd_scale"])
+    for name in (
+        "stage1_fresh_random_starts",
+        "stage2_fresh_random_starts",
+        "stage1_jittered_restarts",
+        "stage2_jittered_restarts",
+    ):
+        if resolved.get(name) is None:
+            resolved[name] = 0
     return resolved
 
 
@@ -296,18 +544,45 @@ GLOBAL_START_BOX_DEFAULTS = {
     "phi2": (-0.99, 0.99),
     "phi24": (-0.99, 0.99),
     "sigma": (0.05, 2.00),
-    "k_fitbit": (0.0001, 400.0),
-    "log_k_fitbit": (-9.21, 5.99),
-    "mu_log_k_fitbit": (-9.21, 5.99),
-    "log_tau_log_k_fitbit": (-6.0, 1.5),
+    "k_fitbit": (0.01, 10.0),
+    "log_k_fitbit": (-3, 2),
+    "mu_log_k_fitbit": (-3, 2),
+    "log_tau_log_k_fitbit": (-2, 1),
     "eta_wear_lag1": (-4.0, 4.0),
     "wear_phi": (-0.99, 0.99),
     "wear_sigma": (0.05, 2.0),
 }
 
-# Edit this dict in the qmd when you want model-specific search windows to differ
-# from the defaults above without changing the cache key schema.
-PARAMETER_WINDOW_OVERRIDES: dict[str, tuple[float, float]] = {}
+WINDOW_PARAM_FIELDS = {
+    "phi": ("phi_window_low", "phi_window_high"),
+    "phi1": ("phi1_window_low", "phi1_window_high"),
+    "phi2": ("phi2_window_low", "phi2_window_high"),
+    "phi24": ("phi24_window_low", "phi24_window_high"),
+    "sigma": ("sigma_window_low", "sigma_window_high"),
+    "k_fitbit": ("k_fitbit_window_low", "k_fitbit_window_high"),
+    "log_k_fitbit": ("log_k_fitbit_window_low", "log_k_fitbit_window_high"),
+    "mu_log_k_fitbit": ("mu_log_k_fitbit_window_low", "mu_log_k_fitbit_window_high"),
+    "log_tau_log_k_fitbit": ("log_tau_log_k_fitbit_window_low", "log_tau_log_k_fitbit_window_high"),
+    "eta_wear_lag1": ("eta_wear_lag1_window_low", "eta_wear_lag1_window_high"),
+    "wear_phi": ("wear_phi_window_low", "wear_phi_window_high"),
+    "wear_sigma": ("wear_sigma_window_low", "wear_sigma_window_high"),
+}
+
+
+def _parameter_window_overrides(config: dict[str, object]) -> dict[str, tuple[float, float]]:
+    overrides: dict[str, tuple[float, float]] = {}
+    for param_name, (low_key, high_key) in WINDOW_PARAM_FIELDS.items():
+        low_value = config.get(low_key)
+        high_value = config.get(high_key)
+        if low_value is None and high_value is None:
+            continue
+        default_low, default_high = GLOBAL_START_BOX_DEFAULTS[param_name]
+        resolved_low = float(default_low if low_value is None else low_value)
+        resolved_high = float(default_high if high_value is None else high_value)
+        if resolved_low >= resolved_high:
+            raise ValueError(f"Search window for {param_name} must satisfy low < high.")
+        overrides[param_name] = (resolved_low, resolved_high)
+    return overrides
 
 
 def _active_model_families(config: dict[str, object]) -> list[str]:
@@ -349,6 +624,7 @@ def _active_pooling_modes(config: dict[str, object]) -> list[str]:
 
 RESOLVED_CONFIG["active_model_families"] = _active_model_families(RESOLVED_CONFIG)
 RESOLVED_CONFIG["active_pooling_modes"] = _active_pooling_modes(RESOLVED_CONFIG)
+PARAMETER_WINDOW_OVERRIDES = _parameter_window_overrides(RESOLVED_CONFIG)
 RESOLVED_CONFIG["search_windows"] = {
     **GLOBAL_START_BOX_DEFAULTS,
     **PARAMETER_WINDOW_OVERRIDES,
@@ -384,12 +660,12 @@ SEARCH_STAGE_SETTINGS = [
         "keep_top": int(RESOLVED_CONFIG["stage1_keep_top"]),
         "particles": int(RESOLVED_CONFIG["stage1_particles"]),
         "mif_iterations": int(RESOLVED_CONFIG["stage1_if2_iterations"]),
-        "cooling_fraction": float(RESOLVED_CONFIG["cooling_fraction"]),
-        "rw_sd_scale": float(RESOLVED_CONFIG["rw_sd_scale"]),
+        "cooling_fraction": float(RESOLVED_CONFIG["stage1_cooling_fraction"]),
+        "rw_sd_scale": float(RESOLVED_CONFIG["stage1_rw_sd_scale"]),
         "evaluation_particles": int(RESOLVED_CONFIG["stage1_eval_particles"]),
         "evaluation_pfilter_reps": int(RESOLVED_CONFIG["stage1_eval_reps"]),
-        "n_fresh_random_starts": 0,
-        "n_jittered_restarts": 0,
+        "n_fresh_random_starts": int(RESOLVED_CONFIG["stage1_fresh_random_starts"]),
+        "n_jittered_restarts": int(RESOLVED_CONFIG["stage1_jittered_restarts"]),
     },
     {
         "name": "Stage 2",
@@ -397,12 +673,12 @@ SEARCH_STAGE_SETTINGS = [
         "keep_top": int(RESOLVED_CONFIG["stage2_keep_top"]),
         "particles": int(RESOLVED_CONFIG["stage2_particles"]),
         "mif_iterations": int(RESOLVED_CONFIG["stage2_if2_iterations"]),
-        "cooling_fraction": float(RESOLVED_CONFIG["cooling_fraction"]),
-        "rw_sd_scale": float(RESOLVED_CONFIG["rw_sd_scale"]),
+        "cooling_fraction": float(RESOLVED_CONFIG["stage2_cooling_fraction"]),
+        "rw_sd_scale": float(RESOLVED_CONFIG["stage2_rw_sd_scale"]),
         "evaluation_particles": int(RESOLVED_CONFIG["stage2_eval_particles"]),
         "evaluation_pfilter_reps": int(RESOLVED_CONFIG["stage2_eval_reps"]),
-        "n_fresh_random_starts": 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0,
-        "n_jittered_restarts": 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0,
+        "n_fresh_random_starts": int(RESOLVED_CONFIG["stage2_fresh_random_starts"]),
+        "n_jittered_restarts": int(RESOLVED_CONFIG["stage2_jittered_restarts"]),
     },
 ]
 
@@ -775,8 +1051,8 @@ initial_k_fitbit = 200.0
 local_mle_particles = int(RESOLVED_CONFIG["stage1_particles"])
 local_mle_mif_iterations = int(RESOLVED_CONFIG["stage1_if2_iterations"])
 local_mle_random_seed = int(RESOLVED_CONFIG["global_seed"])
-local_mle_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
-local_mle_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+local_mle_cooling_fraction = float(RESOLVED_CONFIG["stage1_cooling_fraction"])
+local_mle_rw_sd_scale = float(RESOLVED_CONFIG["stage1_rw_sd_scale"])
 local_mle_evaluation_particles = int(RESOLVED_CONFIG["stage1_eval_particles"])
 local_mle_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage1_eval_reps"])
 
@@ -792,12 +1068,12 @@ global_stage1_n_starts = int(RESOLVED_CONFIG["stage1_starts"])
 global_stage1_keep_top = int(RESOLVED_CONFIG["stage1_keep_top"])
 global_stage1_particles = int(RESOLVED_CONFIG["stage1_particles"])
 global_stage1_mif_iterations = int(RESOLVED_CONFIG["stage1_if2_iterations"])
-global_stage1_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
-global_stage1_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+global_stage1_cooling_fraction = float(RESOLVED_CONFIG["stage1_cooling_fraction"])
+global_stage1_rw_sd_scale = float(RESOLVED_CONFIG["stage1_rw_sd_scale"])
 global_stage1_evaluation_particles = int(RESOLVED_CONFIG["stage1_eval_particles"])
 global_stage1_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage1_eval_reps"])
-global_stage1_n_fresh_random_starts = 0
-global_stage1_n_jittered_restarts = 0
+global_stage1_n_fresh_random_starts = int(RESOLVED_CONFIG["stage1_fresh_random_starts"])
+global_stage1_n_jittered_restarts = int(RESOLVED_CONFIG["stage1_jittered_restarts"])
 
 # Global MLE stage 2 controls
 global_stage2_name = "Stage 2"
@@ -805,12 +1081,12 @@ global_stage2_n_starts = int(RESOLVED_CONFIG["stage2_starts"])
 global_stage2_keep_top = int(RESOLVED_CONFIG["stage2_keep_top"])
 global_stage2_particles = int(RESOLVED_CONFIG["stage2_particles"])
 global_stage2_mif_iterations = int(RESOLVED_CONFIG["stage2_if2_iterations"])
-global_stage2_cooling_fraction = float(RESOLVED_CONFIG["cooling_fraction"])
-global_stage2_rw_sd_scale = float(RESOLVED_CONFIG["rw_sd_scale"])
+global_stage2_cooling_fraction = float(RESOLVED_CONFIG["stage2_cooling_fraction"])
+global_stage2_rw_sd_scale = float(RESOLVED_CONFIG["stage2_rw_sd_scale"])
 global_stage2_evaluation_particles = int(RESOLVED_CONFIG["stage2_eval_particles"])
 global_stage2_evaluation_pfilter_reps = int(RESOLVED_CONFIG["stage2_eval_reps"])
-global_stage2_n_fresh_random_starts = 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0
-global_stage2_n_jittered_restarts = 1 if int(RESOLVED_CONFIG["RL"]) >= 1 else 0
+global_stage2_n_fresh_random_starts = int(RESOLVED_CONFIG["stage2_fresh_random_starts"])
+global_stage2_n_jittered_restarts = int(RESOLVED_CONFIG["stage2_jittered_restarts"])
 
 # Global start-box controls
 global_start_box_phi_low = float(RESOLVED_CONFIG["search_windows"]["phi"][0])
@@ -1066,24 +1342,38 @@ def build_model_comparison_tables(df: pd.DataFrame) -> list[tuple[str, pd.DataFr
         "heldout_subtotal_rmse_sqrtm": "daily RMSE / sqrt(m)",
         "mean_signed_subtotal_error": "mean subtotal err",
         "mean_signed_normalized_subtotal_error": "mean norm err",
+        "mean_panel_unit_loglik": "mean logLik",
         "n_windows_used": "windows",
         "mean_masked_hours": "mean masked hrs",
     }
     for benchmark_label, benchmark_frame in benchmark_groups:
-        numeric_columns = [
-            column
-            for column in benchmark_frame.columns
-            if column not in {"model_family", "pooling_mode", "benchmark_key", "benchmark_label", "mask_id", "benchmark_version"}
-            and pd.api.types.is_numeric_dtype(pd.to_numeric(benchmark_frame[column], errors="coerce"))
+        table_specs = [
+            (
+                f"{benchmark_label or 'Benchmarks'}",
+                [
+                    "model_family",
+                    "pooling_mode",
+                    "hourly_masked_rmse",
+                    "hourly_masked_mae",
+                    "hourly_masked_correlation",
+                    "heldout_subtotal_rmse_sqrtm",
+                ],
+            ),
+            (
+                f"{benchmark_label or 'Benchmarks'} support",
+                [
+                    "model_family",
+                    "pooling_mode",
+                    "mean_panel_unit_loglik",
+                    "n_windows_used",
+                    "mean_masked_hours",
+                ],
+            ),
         ]
-        metric_chunks = [numeric_columns[index : index + 4] for index in range(0, len(numeric_columns), 4)] or [[]]
-        for chunk_index, metric_chunk in enumerate(metric_chunks, start=1):
-            columns = ["model_family", "pooling_mode", *metric_chunk]
+        for title, columns in table_specs:
             table = select_table_columns(benchmark_frame, columns, rename=rename)
             if table.empty:
                 continue
-            suffix = f" ({chunk_index})" if len(metric_chunks) > 1 else ""
-            title = f"{benchmark_label or 'Benchmarks'}{suffix}"
             tables.append((title, table))
     return tables
 
@@ -1142,19 +1432,23 @@ def build_task_manifest_table(df: pd.DataFrame) -> pd.DataFrame:
             .str.replace("benchmark", "bench", regex=False)
             .str.replace("unmasked", "unmask", regex=False)
             .str.replace("masked", "mask", regex=False)
+            .str.replace("unit_specific", "unit", regex=False)
+            .str.replace("global_shared_k", "global_k", regex=False)
+            .str.replace("partial_pooled_k", "partial_k", regex=False)
+            .str.replace("core_masking", "core", regex=False)
         )
     if "mask_replicate" in frame.columns:
-        frame["mask_replicate"] = frame["mask_replicate"].fillna("—")
+        frame["mask_replicate"] = frame["mask_replicate"].fillna("-")
     rename = {
-        "artifact_type": "artifact",
-        "model_family": "model",
-        "mask_replicate": "mask rep",
         "benchmark_key": "benchmark",
         "runtime_seconds": "runtime (s)",
     }
+    columns = ["task", "status", "runtime_seconds"]
+    if "benchmark_key" in frame.columns and frame["benchmark_key"].notna().any():
+        columns.insert(1, "benchmark_key")
     return select_table_columns(
         frame,
-        ["task", "artifact_type", "benchmark_key", "model_family", "mask_replicate", "status", "runtime_seconds"],
+        columns,
         rename=rename,
     )
 
@@ -3045,12 +3339,28 @@ aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary"
 aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
 aggregate_timing_summary = aggregate_result.timing_summary.copy()
 
+if (
+    not aggregate_model_comparison.empty
+    and not aggregate_parameter_summary.empty
+    and {"model_family", "pooling_mode", "panel_unit_loglik"}.issubset(aggregate_parameter_summary.columns)
+):
+    mean_loglik_by_model = (
+        aggregate_parameter_summary.groupby(["model_family", "pooling_mode"], as_index=False)
+        .agg(mean_panel_unit_loglik=("panel_unit_loglik", lambda s: float(pd.to_numeric(s, errors="coerce").mean())))
+    )
+    aggregate_model_comparison = aggregate_model_comparison.merge(
+        mean_loglik_by_model,
+        how="left",
+        on=["model_family", "pooling_mode"],
+    )
+
 aggregate_settings_table = pd.DataFrame(
     [
         {
             "RL": aggregate_config["RL"],
             "Device": aggregate_config["device"],
             "Participant set": aggregate_config["participant_set"],
+            "Panel batch size": aggregate_config["panel_chunk_size"],
             "Model set": aggregate_config["model_set"],
             "Displayed model": aggregate_config["model_family"],
             "Pooling": ", ".join(map(str, aggregate_config["active_pooling_modes"])),
@@ -3060,8 +3370,24 @@ aggregate_settings_table = pd.DataFrame(
             "Mask replicates": aggregate_config["n_mask_replicates"],
             "Stage 1 starts": aggregate_config["stage1_starts"],
             "Stage 2 starts": aggregate_config["stage2_starts"],
+            "Stage 1 keep top": aggregate_config["stage1_keep_top"],
+            "Stage 2 keep top": aggregate_config["stage2_keep_top"],
+            "Stage 1 IF2 iterations": aggregate_config["stage1_if2_iterations"],
+            "Stage 2 IF2 iterations": aggregate_config["stage2_if2_iterations"],
             "Stage 1 particles": aggregate_config["stage1_particles"],
             "Stage 2 particles": aggregate_config["stage2_particles"],
+            "Stage 1 eval particles": aggregate_config["stage1_eval_particles"],
+            "Stage 2 eval particles": aggregate_config["stage2_eval_particles"],
+            "Stage 1 eval reps": aggregate_config["stage1_eval_reps"],
+            "Stage 2 eval reps": aggregate_config["stage2_eval_reps"],
+            "Stage 1 cooling": aggregate_config["stage1_cooling_fraction"],
+            "Stage 2 cooling": aggregate_config["stage2_cooling_fraction"],
+            "Stage 1 RW SD": aggregate_config["stage1_rw_sd_scale"],
+            "Stage 2 RW SD": aggregate_config["stage2_rw_sd_scale"],
+            "Stage 1 fresh starts": aggregate_config["stage1_fresh_random_starts"],
+            "Stage 2 fresh starts": aggregate_config["stage2_fresh_random_starts"],
+            "Stage 1 jittered": aggregate_config["stage1_jittered_restarts"],
+            "Stage 2 jittered": aggregate_config["stage2_jittered_restarts"],
         }
     ]
 )
@@ -3077,6 +3403,7 @@ if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmar
             "RL": aggregate_config["RL"],
             "Device": aggregate_config["device"],
             "Participant set": aggregate_config["participant_set"],
+            "Panel batch size": aggregate_config["panel_chunk_size"],
             "Model set": aggregate_config["model_set"],
             "Displayed model": aggregate_config["model_family"],
             "Pooling": ", ".join(map(str, aggregate_config["active_pooling_modes"])),
@@ -3086,11 +3413,49 @@ if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmar
             "Mask replicates": aggregate_config["n_mask_replicates"],
             "Stage 1 starts": aggregate_config["stage1_starts"],
             "Stage 2 starts": aggregate_config["stage2_starts"],
+            "Stage 1 keep top": aggregate_config["stage1_keep_top"],
+            "Stage 2 keep top": aggregate_config["stage2_keep_top"],
+            "Stage 1 IF2 iterations": aggregate_config["stage1_if2_iterations"],
+            "Stage 2 IF2 iterations": aggregate_config["stage2_if2_iterations"],
             "Stage 1 particles": aggregate_config["stage1_particles"],
             "Stage 2 particles": aggregate_config["stage2_particles"],
+            "Stage 1 eval particles": aggregate_config["stage1_eval_particles"],
+            "Stage 2 eval particles": aggregate_config["stage2_eval_particles"],
+            "Stage 1 eval reps": aggregate_config["stage1_eval_reps"],
+            "Stage 2 eval reps": aggregate_config["stage2_eval_reps"],
+            "Stage 1 cooling": aggregate_config["stage1_cooling_fraction"],
+            "Stage 2 cooling": aggregate_config["stage2_cooling_fraction"],
+            "Stage 1 RW SD": aggregate_config["stage1_rw_sd_scale"],
+            "Stage 2 RW SD": aggregate_config["stage2_rw_sd_scale"],
+            "Stage 1 fresh starts": aggregate_config["stage1_fresh_random_starts"],
+            "Stage 2 fresh starts": aggregate_config["stage2_fresh_random_starts"],
+            "Stage 1 jittered": aggregate_config["stage1_jittered_restarts"],
+            "Stage 2 jittered": aggregate_config["stage2_jittered_restarts"],
         }
     )
     display_table(aggregate_settings_display, precision=3)
+```
+
+```{python}
+#| echo: false
+#| label: aggregate-search-windows
+
+if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmarks_only", "plots_only"}:
+    search_window_display = (
+        pd.DataFrame(
+            [
+                {
+                    "Parameter": str(parameter_name),
+                    "Low": float(bounds[0]),
+                    "High": float(bounds[1]),
+                }
+                for parameter_name, bounds in aggregate_config["search_windows"].items()
+            ]
+        )
+        .sort_values("Parameter")
+        .reset_index(drop=True)
+    )
+    display_table(search_window_display, precision=3)
 ```
 
 ```{python}

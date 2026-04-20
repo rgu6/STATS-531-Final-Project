@@ -141,6 +141,9 @@ def _fit_identity_context(
         "analysis_end_utc_iso": resolved_config["analysis_end_utc_iso"],
         "assumed_local_timezone": resolved_config["assumed_local_timezone"],
         "participant_ids": list(map(str, participant_ids)),
+        "panel_chunk_size": (
+            None if resolved_config.get("panel_chunk_size") is None else int(resolved_config["panel_chunk_size"])
+        ),
         "covariate_mode": resolved_config["covariate_mode"],
         "search_stage_settings": resolved_config["search_stage_settings"],
         "search_windows": search_windows,
@@ -594,6 +597,14 @@ def _attach_reward_window_ids(hourly_frame: pd.DataFrame, reward_window_frame: p
     return frame
 
 
+def _chunk_participant_ids(participant_ids: list[str], panel_chunk_size: int | None) -> list[list[str]]:
+    if not participant_ids:
+        return []
+    requested_size = len(participant_ids) if panel_chunk_size is None else int(panel_chunk_size)
+    chunk_size = max(1, min(requested_size, len(participant_ids)))
+    return [participant_ids[index : index + chunk_size] for index in range(0, len(participant_ids), chunk_size)]
+
+
 def _prediction_table_from_run(
     run_result,
     *,
@@ -895,6 +906,7 @@ def run_panel_pomp_model(
     covariate_mode: str,
     mask_id: str | None,
     warm_start_estimates: pd.DataFrame | None,
+    panel_chunk_size: int | None = None,
     include_postfit_reconstruction: bool = True,
 ) -> dict[str, object]:
     architecture = ARCHITECTURE_SPEC_LOOKUP[architecture_key]
@@ -902,140 +914,211 @@ def run_panel_pomp_model(
         raise ValueError(
             f"Aggregate panel fitting in computedraft does not currently support seasonal architecture {architecture_key!r}."
         )
-    initial_params_by_participant: dict[str, dict[str, float]] = {}
-    for participant_id, hourly_data in data_by_participant.items():
-        params = _initial_params_for_pooling(
-            hourly_data,
-            architecture_key=architecture_key,
-            pooling_mode=pooling_mode,
-        )
+    participant_ids = sorted(str(participant_id) for participant_id in data_by_participant)
+    participant_chunks = _chunk_participant_ids(participant_ids, panel_chunk_size)
+
+    participant_estimate_frames: list[pd.DataFrame] = []
+    estimate_summary_frames: list[pd.DataFrame] = []
+    candidate_frames: list[pd.DataFrame] = []
+    stage_summary_frames: list[pd.DataFrame] = []
+    hourly_frames: list[pd.DataFrame] = []
+    reward_frames: list[pd.DataFrame] = []
+    timing_rows: list[dict[str, object]] = []
+    total_best_loglik = 0.0
+    shared_estimates: dict[str, float] = {}
+
+    for chunk_index, participant_chunk in enumerate(participant_chunks, start=1):
+        chunk_data_by_participant = {participant_id: data_by_participant[participant_id] for participant_id in participant_chunk}
+        chunk_warm_start = None
         if warm_start_estimates is not None and not warm_start_estimates.empty:
-            match = warm_start_estimates.loc[warm_start_estimates["participantidentifier"].astype(str) == str(participant_id)]
-            if not match.empty:
-                for name in list(params):
-                    if name in match.columns and pd.notna(match.iloc[0][name]):
-                        params[name] = float(match.iloc[0][name])
-        initial_params_by_participant[str(participant_id)] = params
+            chunk_warm_start = warm_start_estimates.loc[
+                warm_start_estimates["participantidentifier"].astype(str).isin(list(map(str, participant_chunk)))
+            ].copy()
 
-    sample_params = initial_params_by_participant[next(iter(initial_params_by_participant))]
-    start_box = _start_box_for_initial_params(sample_params, search_windows)
-    panel_result = run_multistage_panel_step_pomp_search(
-        data_by_participant,
-        initial_params_by_participant=initial_params_by_participant,
-        free_params=list(sample_params.keys()),
-        start_box=start_box,
-        stage_configs=stage_configs,
-        random_seed=int(global_seed),
-        ar_order=int(architecture.ar_order),
-        missingness_mode=str(getattr(architecture, "missingness_mode", "standard")),
-        k_fitbit_pooling_mode=_pooling_mode_for_panel(pooling_mode),
-        include_current_theta_as_start=True,
-        jitter_scale=0.10,
-        box_shrink_factor_per_stage=1.00,
-    )
-
-    hourly_frames = []
-    reward_frames = []
-    timing_rows = [
-        {
-            "participant_id": pd.NA,
-            "step": "panel_global_search",
-            "seconds": float(panel_result.total_runtime_seconds),
-        }
-    ]
-    if include_postfit_reconstruction:
-        for participant_id, hourly_data in data_by_participant.items():
-            estimate_row = panel_result.participant_estimates.loc[
-                panel_result.participant_estimates["participantidentifier"].astype(str) == str(participant_id)
-            ]
-            if estimate_row.empty:
-                continue
-            participant_params = {
-                str(key): float(estimate_row.iloc[0][key])
-                for key in estimate_row.columns
-                if key not in {"participantidentifier", "panel_unit_loglik", "k_fitbit_pooling_mode"} and pd.notna(estimate_row.iloc[0][key])
-            }
-            run_start = perf_counter()
-            run_result = run_step_pomp_if2(
+        initial_params_by_participant: dict[str, dict[str, float]] = {}
+        for participant_id, hourly_data in chunk_data_by_participant.items():
+            params = _initial_params_for_pooling(
                 hourly_data,
-                initial_params=participant_params,
-                free_params=[],
-                particles=int(stage_configs[-1].evaluation_particles),
-                mif_iterations=0,
-                random_seed=int(global_seed) + hash(str(participant_id)) % 10_000,
-                cooling_fraction=float(stage_configs[-1].cooling_fraction),
-                rw_sd_scale=float(stage_configs[-1].rw_sd_scale),
-                simulation_count=1,
-                pfilter_reps=1,
-                backward_smoother_enabled=False,
-                evaluation_particles=int(stage_configs[-1].evaluation_particles),
-                evaluation_pfilter_reps=int(stage_configs[-1].evaluation_pfilter_reps),
-                ar_order=int(architecture.ar_order),
-                seasonal_lag_hours=int(getattr(architecture, "seasonal_lag_hours", 0)),
-                missingness_mode=str(getattr(architecture, "missingness_mode", "standard")),
+                architecture_key=architecture_key,
+                pooling_mode=pooling_mode,
             )
-            runtime = float(perf_counter() - run_start)
-            timing_rows.append({"participant_id": str(participant_id), "step": "panel_postfit_filter", "seconds": runtime})
-            runtime_breakdown = run_result.runtime_breakdown.copy()
-            if not runtime_breakdown.empty and {"step", "seconds"}.issubset(runtime_breakdown.columns):
-                for runtime_row in runtime_breakdown.itertuples(index=False):
-                    timing_rows.append(
-                        {
-                            "participant_id": str(participant_id),
-                            "step": f"panel_postfit_{str(getattr(runtime_row, 'step'))}",
-                            "seconds": float(getattr(runtime_row, "seconds")),
-                        }
-                    )
-                run_total_series = pd.to_numeric(
-                    runtime_breakdown.loc[runtime_breakdown["step"].astype(str) == "run_total", "seconds"],
-                    errors="coerce",
+            if chunk_warm_start is not None and not chunk_warm_start.empty:
+                match = chunk_warm_start.loc[chunk_warm_start["participantidentifier"].astype(str) == str(participant_id)]
+                if not match.empty:
+                    for name in list(params):
+                        if name in match.columns and pd.notna(match.iloc[0][name]):
+                            params[name] = float(match.iloc[0][name])
+            initial_params_by_participant[str(participant_id)] = params
+
+        sample_params = initial_params_by_participant[next(iter(initial_params_by_participant))]
+        start_box = _start_box_for_initial_params(sample_params, search_windows)
+        panel_result = run_multistage_panel_step_pomp_search(
+            chunk_data_by_participant,
+            initial_params_by_participant=initial_params_by_participant,
+            free_params=list(sample_params.keys()),
+            start_box=start_box,
+            stage_configs=stage_configs,
+            random_seed=int(global_seed) + (chunk_index - 1) * 10_000,
+            ar_order=int(architecture.ar_order),
+            missingness_mode=str(getattr(architecture, "missingness_mode", "standard")),
+            k_fitbit_pooling_mode=_pooling_mode_for_panel(pooling_mode),
+            include_current_theta_as_start=True,
+            jitter_scale=0.10,
+            box_shrink_factor_per_stage=1.00,
+        )
+
+        chunk_participant_estimates = panel_result.participant_estimates.copy()
+        chunk_participant_estimates["panel_chunk_index"] = int(chunk_index)
+        chunk_participant_estimates["panel_chunk_size_requested"] = int(
+            len(participant_ids) if panel_chunk_size is None else panel_chunk_size
+        )
+        chunk_participant_estimates["panel_chunk_n_participants"] = int(len(participant_chunk))
+        participant_estimate_frames.append(chunk_participant_estimates)
+
+        chunk_estimate_summary = panel_result.estimate_summary.copy()
+        if not chunk_estimate_summary.empty:
+            chunk_estimate_summary["panel_chunk_index"] = int(chunk_index)
+            chunk_estimate_summary["panel_chunk_n_participants"] = int(len(participant_chunk))
+            estimate_summary_frames.append(chunk_estimate_summary)
+
+        chunk_candidate_frame = panel_result.candidate_frame.copy()
+        if not chunk_candidate_frame.empty:
+            chunk_candidate_frame["panel_chunk_index"] = int(chunk_index)
+            candidate_frames.append(chunk_candidate_frame)
+
+        chunk_stage_summary = panel_result.stage_summary.copy()
+        if not chunk_stage_summary.empty:
+            chunk_stage_summary["panel_chunk_index"] = int(chunk_index)
+            chunk_stage_summary["panel_chunk_n_participants"] = int(len(participant_chunk))
+            stage_summary_frames.append(chunk_stage_summary)
+
+        timing_rows.append(
+            {
+                "participant_id": pd.NA,
+                "panel_chunk_index": int(chunk_index),
+                "step": "panel_global_search",
+                "seconds": float(panel_result.total_runtime_seconds),
+            }
+        )
+        total_best_loglik += float(panel_result.best_loglik)
+        if len(participant_chunks) == 1:
+            shared_estimates = dict(panel_result.shared_estimates)
+
+        if include_postfit_reconstruction:
+            for participant_id, hourly_data in chunk_data_by_participant.items():
+                estimate_row = chunk_participant_estimates.loc[
+                    chunk_participant_estimates["participantidentifier"].astype(str) == str(participant_id)
+                ]
+                if estimate_row.empty:
+                    continue
+                participant_params = {
+                    str(key): float(estimate_row.iloc[0][key])
+                    for key in estimate_row.columns
+                    if key not in {
+                        "participantidentifier",
+                        "panel_unit_loglik",
+                        "k_fitbit_pooling_mode",
+                        "panel_chunk_index",
+                        "panel_chunk_size_requested",
+                        "panel_chunk_n_participants",
+                    }
+                    and pd.notna(estimate_row.iloc[0][key])
+                }
+                run_start = perf_counter()
+                run_result = run_step_pomp_if2(
+                    hourly_data,
+                    initial_params=participant_params,
+                    free_params=[],
+                    particles=int(stage_configs[-1].evaluation_particles),
+                    mif_iterations=0,
+                    random_seed=int(global_seed) + hash(str(participant_id)) % 10_000,
+                    cooling_fraction=float(stage_configs[-1].cooling_fraction),
+                    rw_sd_scale=float(stage_configs[-1].rw_sd_scale),
+                    simulation_count=1,
+                    pfilter_reps=1,
+                    backward_smoother_enabled=False,
+                    evaluation_particles=int(stage_configs[-1].evaluation_particles),
+                    evaluation_pfilter_reps=int(stage_configs[-1].evaluation_pfilter_reps),
+                    ar_order=int(architecture.ar_order),
+                    seasonal_lag_hours=int(getattr(architecture, "seasonal_lag_hours", 0)),
+                    missingness_mode=str(getattr(architecture, "missingness_mode", "standard")),
                 )
-                if run_total_series.notna().any():
-                    run_total_seconds = float(run_total_series.sum())
-                    timing_rows.append(
-                        {
-                            "participant_id": str(participant_id),
-                            "step": "panel_postfit_host_overhead",
-                            "seconds": float(max(runtime - run_total_seconds, 0.0)),
-                        }
+                runtime = float(perf_counter() - run_start)
+                timing_rows.append(
+                    {
+                        "participant_id": str(participant_id),
+                        "panel_chunk_index": int(chunk_index),
+                        "step": "panel_postfit_filter",
+                        "seconds": runtime,
+                    }
+                )
+                runtime_breakdown = run_result.runtime_breakdown.copy()
+                if not runtime_breakdown.empty and {"step", "seconds"}.issubset(runtime_breakdown.columns):
+                    for runtime_row in runtime_breakdown.itertuples(index=False):
+                        timing_rows.append(
+                            {
+                                "participant_id": str(participant_id),
+                                "panel_chunk_index": int(chunk_index),
+                                "step": f"panel_postfit_{str(getattr(runtime_row, 'step'))}",
+                                "seconds": float(getattr(runtime_row, "seconds")),
+                            }
+                        )
+                    run_total_series = pd.to_numeric(
+                        runtime_breakdown.loc[runtime_breakdown["step"].astype(str) == "run_total", "seconds"],
+                        errors="coerce",
                     )
-            hourly_frames.append(
-                _prediction_table_from_run(
+                    if run_total_series.notna().any():
+                        run_total_seconds = float(run_total_series.sum())
+                        timing_rows.append(
+                            {
+                                "participant_id": str(participant_id),
+                                "panel_chunk_index": int(chunk_index),
+                                "step": "panel_postfit_host_overhead",
+                                "seconds": float(max(runtime - run_total_seconds, 0.0)),
+                            }
+                        )
+                hourly_frames.append(
+                    _prediction_table_from_run(
+                        run_result,
+                        participant_id=str(participant_id),
+                        model_family=model_family,
+                        pooling_mode=pooling_mode,
+                        covariate_mode=covariate_mode,
+                        mask_id=mask_id,
+                    )
+                )
+                reward_frame = _reward_table_from_run(
                     run_result,
                     participant_id=str(participant_id),
                     model_family=model_family,
                     pooling_mode=pooling_mode,
-                    covariate_mode=covariate_mode,
                     mask_id=mask_id,
                 )
-            )
-            reward_frame = _reward_table_from_run(
-                run_result,
-                participant_id=str(participant_id),
-                model_family=model_family,
-                pooling_mode=pooling_mode,
-                mask_id=mask_id,
-            )
-            reward_frame = reward_frame.merge(
-                _compute_masked_hour_counts(run_result.plot_frame, run_result.reward_frame),
-                how="left",
-                on="decision_id",
-            )
-            reward_frame["artificially_masked_hours"] = pd.to_numeric(
-                reward_frame.get("artificially_masked_hours_y"), errors="coerce"
-            ).fillna(
-                pd.to_numeric(reward_frame.get("artificially_masked_hours_x"), errors="coerce")
-            ).fillna(0).astype(int)
-            reward_frames.append(reward_frame)
+                reward_frame = reward_frame.merge(
+                    _compute_masked_hour_counts(run_result.plot_frame, run_result.reward_frame),
+                    how="left",
+                    on="decision_id",
+                )
+                reward_frame["artificially_masked_hours"] = pd.to_numeric(
+                    reward_frame.get("artificially_masked_hours_y"), errors="coerce"
+                ).fillna(
+                    pd.to_numeric(reward_frame.get("artificially_masked_hours_x"), errors="coerce")
+                ).fillna(0).astype(int)
+                reward_frames.append(reward_frame)
+
+    participant_estimates = pd.concat(participant_estimate_frames, ignore_index=True) if participant_estimate_frames else pd.DataFrame()
+    estimate_summary = pd.concat(estimate_summary_frames, ignore_index=True) if estimate_summary_frames else pd.DataFrame()
+    candidate_frame = pd.concat(candidate_frames, ignore_index=True) if candidate_frames else pd.DataFrame()
+    stage_summary = pd.concat(stage_summary_frames, ignore_index=True) if stage_summary_frames else pd.DataFrame()
 
     return {
         "kind": "panel_pomp",
-        "participant_estimates": panel_result.participant_estimates,
-        "estimate_summary": panel_result.estimate_summary,
-        "shared_estimates": panel_result.shared_estimates,
-        "candidate_frame": panel_result.candidate_frame,
-        "stage_summary": panel_result.stage_summary,
-        "best_loglik": float(panel_result.best_loglik),
+        "participant_estimates": participant_estimates,
+        "estimate_summary": estimate_summary,
+        "shared_estimates": shared_estimates,
+        "candidate_frame": candidate_frame,
+        "stage_summary": stage_summary,
+        "best_loglik": float(total_best_loglik),
         "hourly_prediction_frame": pd.concat(hourly_frames, ignore_index=True) if hourly_frames else pd.DataFrame(),
         "reward_window_frame": pd.concat(reward_frames, ignore_index=True) if reward_frames else pd.DataFrame(),
         "timing_frame": pd.DataFrame(timing_rows),
@@ -1568,6 +1651,11 @@ def run_cache_first_pipeline(
                                 covariate_mode=str(resolved_config["covariate_mode"]),
                                 mask_id=None,
                                 warm_start_estimates=None,
+                                panel_chunk_size=(
+                                    None
+                                    if resolved_config.get("panel_chunk_size") is None
+                                    else int(resolved_config["panel_chunk_size"])
+                                ),
                             )
                         total_runtime = float(perf_counter() - task_start)
                         timing_rows.append(
@@ -1684,6 +1772,11 @@ def run_cache_first_pipeline(
                                 covariate_mode=str(resolved_config["covariate_mode"]),
                                 mask_id=mask_id,
                                 warm_start_estimates=warm_start,
+                                panel_chunk_size=(
+                                    None
+                                    if resolved_config.get("panel_chunk_size") is None
+                                    else int(resolved_config["panel_chunk_size"])
+                                ),
                             )
                         artifact["mask_summary"] = mask_payload["mask_summary"]
                         total_runtime = float(perf_counter() - task_start)
