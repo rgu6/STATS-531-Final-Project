@@ -2894,7 +2894,7 @@ def _sample_uniform_start(
     params = {name: float(value) for name, value in template_params.items()}
     for name in free_params:
         low, high = bounds[name]
-        params[name] = float(rng.uniform(low, high))
+        params[name] = _sample_start_value(name, low, high, rng)
     return params
 
 
@@ -2911,10 +2911,52 @@ def _sample_jittered_start(
     for name in free_params:
         base_value = float(center_params.get(name, template_params[name]))
         low, high = bounds[name]
-        width = max(float(high - low), 1e-6)
-        jittered = base_value + rng.normal(scale=float(max(jitter_scale, 1e-6)) * width)
-        params[name] = float(np.clip(jittered, low, high))
+        params[name] = _jitter_start_value(
+            name,
+            base_value,
+            low,
+            high,
+            rng,
+            jitter_scale=float(max(jitter_scale, 1e-6)),
+        )
     return params
+
+
+def _should_use_log_uniform_start(name: str, low: float, high: float) -> bool:
+    return str(name) == "k_fitbit" and float(low) > 0.0 and float(high) > 0.0
+
+
+def _sample_start_value(name: str, low: float, high: float, rng: np.random.Generator) -> float:
+    low = float(low)
+    high = float(high)
+    if _should_use_log_uniform_start(name, low, high):
+        return float(np.exp(rng.uniform(np.log(low), np.log(high))))
+    return float(rng.uniform(low, high))
+
+
+def _jitter_start_value(
+    name: str,
+    base_value: float,
+    low: float,
+    high: float,
+    rng: np.random.Generator,
+    *,
+    jitter_scale: float,
+) -> float:
+    low = float(low)
+    high = float(high)
+    base_value = float(base_value)
+    scale = float(max(jitter_scale, 1e-6))
+    if _should_use_log_uniform_start(name, low, high) and base_value > 0.0:
+        log_low = float(np.log(low))
+        log_high = float(np.log(high))
+        log_width = max(float(log_high - log_low), 1e-6)
+        log_base = float(np.clip(np.log(base_value), log_low, log_high))
+        jittered = log_base + rng.normal(scale=scale * log_width)
+        return float(np.exp(np.clip(jittered, log_low, log_high)))
+    width = max(float(high - low), 1e-6)
+    jittered = base_value + rng.normal(scale=scale * width)
+    return float(np.clip(jittered, low, high))
 
 
 def _build_stage_candidates(

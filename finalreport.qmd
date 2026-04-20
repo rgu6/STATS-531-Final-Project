@@ -1853,20 +1853,23 @@ display_table(global_stage_summary, precision=3)
 #| message: false
 #| label: coefficent-table
 
-# Compare the starting values with the fitted local MLE so it is easy to see
-# which coefficients moved under the local search and the two-stage global search.
+# Compare the starting values with the available fitted results. The local-fit
+# column is included only when that chunk has been run in this document.
+local_fit_result = globals().get("local_step_pomp_result")
 coefficient_rows = []
 for param_name in initial_params:
-    local_value = local_step_pomp_result.fitted_params.get(param_name, initial_params[param_name])
     global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
-    coefficient_rows.append(
-        {
-            "Parameter": param_name,
-            "Initial value": initial_params[param_name],
-            "Local MLE value": local_value,
-            "Global MLE value": global_value,
-        }
-    )
+    row = {
+        "Parameter": param_name,
+        "Initial value": initial_params[param_name],
+        "Global MLE value": global_value,
+    }
+    if local_fit_result is not None:
+        row["Local MLE value"] = local_fit_result.fitted_params.get(
+            param_name,
+            initial_params[param_name],
+        )
+    coefficient_rows.append(row)
 
 coefficient_table = pd.DataFrame(coefficient_rows).round(3)
 display_table(coefficient_table, precision=3)
@@ -1886,11 +1889,13 @@ Here we plot an estimate of the reconstructed latent reward, alongside the obser
 #| label: filtered-reward-plot
 
 # Plot the filtered 24-hour reward reconstruction after the local 3pm decision
-# time. By default this uses the best fit from the global two-stage search.
+# time. If the local-fit chunk is absent, the "local" selector falls back to
+# the global-best fit.
 def select_plot_result(plot_source: str) -> tuple[StepPompRunResult, str]:
     normalized_source = str(plot_source).strip().lower()
-    if normalized_source == "local":
-        return local_step_pomp_result, "local fit"
+    local_fit_result = globals().get("local_step_pomp_result")
+    if normalized_source == "local" and local_fit_result is not None:
+        return local_fit_result, "local fit"
     return global_best_run, "global-best fit"
 
 
