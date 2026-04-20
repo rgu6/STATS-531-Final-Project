@@ -128,15 +128,18 @@ The chart below is a scatterplot of the mean and standard deviation of hourly st
 
 # scatter plot of mean versus standard deviation of fitbit steps for non-missing buckets
 # each dot represents one of the 78 participants
+non_missing = prune_df.loc[prune_df["fitbitStepsMissing"] == 0].copy()
+non_missing["fitbitSteps"] = pd.to_numeric(non_missing["fitbitSteps"], errors="coerce")
+non_missing = non_missing.dropna(subset=["fitbitSteps"])
 
-stats = nonMissing.groupby('PARTICIPANTIDENTIFIER')['fitbitSteps'].agg(
-    ['mean', 'median', 'std', 'min', 'max', 'count']
+stats = non_missing.groupby("PARTICIPANTIDENTIFIER")["fitbitSteps"].agg(
+    ["mean", "median", "std", "min", "max", "count"]
 ).reset_index()
 
-plt.scatter(stats['mean'], stats['std'])
-plt.xlabel('Mean Fitbit Steps')
-plt.ylabel('Standard Deviation of Fitbit Steps')
-plt.title('Mean vs Variability in Steps (Non-Missing Hourly Buckets)')
+plt.scatter(stats["mean"], stats["std"])
+plt.xlabel("Mean Fitbit Steps")
+plt.ylabel("Standard Deviation of Fitbit Steps")
+plt.title("Mean vs Variability in Steps (Non-Missing Hourly Buckets)")
 plt.show()
 ```
 
