@@ -290,50 +290,65 @@ This is some UM-GPT code that is trying to plot the distribution of percent miss
 
 ### Model
 
-Our aim is to predict the "24-hour-reward", the sum of the steps in the 24 hours after 3pm local time. Each of these hours is a bucket, where the Fitbit data may be observed, or it may be missing, which we model with a Partially Observed Markov Process (POMP) model:
+Our aim is to estimate the "24-hour-reward", the sum of the steps in the 24 hours following 3pm local time. We work at the hourly level, so each hour is treated as one bucket. Fitbit step counts may be observed data may be observed or missing in a given bucket, which motivates a partially observed Markov process (POMP) model:
 
-Latent process:
+We write the latent activity state as:
 $$
-x_{t+1} = \phi x_t + \sigma \epsilon_t, 
-\qquad \epsilon_t \sim N(0, 1)
+x_{t+1} = \phi x_t + \sigma \varepsilon_t,
+\qquad \varepsilon_t \sim N(0,1),
 $$
+where $x_t$ represents hour-to-hour deviations in activity not explained by systematic daily structure; $\phi$ controls temporal persistance and $\sigma$ controls the magnitude of unexplained hourly variation.
+
+Conditional on the latent state, the latent step count in hour $t$ is:
 $$
-N_t | x_t \sim \text{Poisson}(\lambda, t),
-\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t + \beta^\intercal z_t
+N_t | x_t \sim \text{Poisson}(\lambda_t),
+\qquad \log \lambda_t = \alpha_{h(t)} + \delta_{w(t)} + x_t
+$$
+where
+$$
+\log \lambda_t = \bar{\ell} + \alpha_{h(t)} + \delta_{w(t)} + x_t
 $$
 
+Here, $h(t)$ is the local hour of day and $w(t)$ is the local day of the week. The $\alpha_{h(t)}$ term captures participant-specific hour-of-day patterns, and $\delta_{w(t)}$ captures participant-specific day-of-week effects, estimated empirically as follows:
+
+$$
+\ell_t = \log(\text{steps}_t + 1)
+$$
+
+For each hour $h \in \{0, \dots, 23\}$, hour-of-day effect is centeed by $\bar{\ell}_t$ as:
+$$
+\alpha_h 
+= 
+\mathbb{E} [\ell_t \mid h(t) = h] - \bar{\ell} 
+- \frac{1}{24}
+\sum \limits_{r = 0}^{23} \alpha_r
+$$
+
+The weekday effects are computed similarly.
+
+
+
+
+The observed Fitbit step count is modeled as a noisy measurement of the latent hourly steps:
 $$
 Y_t | N_t \sim \text{NegBin}(N_t, k)
 $$
 
-Our aim is to estimate the step count 24 hours after 3pm local time each day:
+We use the negative binomial parametrization with mean $N_t$ and variance 
+$$
+\mathrm{Var}(Y_t \mid N_t) = N_t + \frac{N_t^2}{k}.
+$$
+
+Under this parametrization, larger values of $k$ correspond to less $Poisson$-like variation
+
+Our quantity of interest is the latent 24-hour reward:
 $$
 R_d = \sum \limits_{t \in H(d)} N_t
 $$
 
-The latent time model is a simple AR(1). The other components of the $\lambda_t$ are $\alpha_{h(t)}$, a personalized time of day factor, $\delta_{w(t)}$ a personalized day of week factor, and $\beta^\intercal z_t$, which are any covariates we decide to add. The $\alpha_{h(t)}$ and $\delta_{w(t)}$ are computed by simple averages of their measured step counts in the given hourly bucket. That is, $h(t)$ is the local hour of the day of time point $t$, and $w(t)$ is the day of the week of the time point $t$, and  $\alpha_{13}$ means the average step count in the 13th hourly bucket each day for this user, and $\delta_4$ means the average step count on the 4th day of the week (Thursday).
-
-Because $\log \lambda_t$ is a linear model, we'll do variable selection for the features chosen in $z_t$ via a linear model. Specifically, we'll do it in a personalized way across all participants, using LASSO. Across a large set of candidate features, run a regression, use cross validation to pick the best penalty value. The variables which vanish under this penalty we don't pick, the variables which stay, we do pick. We run this across all participants being studied, so each user has a personalized feature set.
-
-CLARIFY negative binomial parametrization
-
-In the observation distributions, picking $k$ is not so clear, and perhaps the negative binomial distribution isn't the right choice. Its variance is: $\text{Var}(Y_t | N_t) = N_t + \frac{N^2_t}{k}$. When $k \rightarrow \infty$, then the variance $\rightarrow N_t$, and the distribution has the same mean and variance, which is to say, it's Poisson. So for $k$ large, we have Poisson distribution. But from running a few of these, $k$ seems to work best being not very large, like in the neighborhood of 40. Not sure what to make of it.
-
-Our interpretation of $k$ is that it's some kind of "how trustworthy is a Fitbit measurement?" This is a bit problematic, because our latent is Fitbit steps. That said, we're thinking of this as a property _of_ the fitbit device, so it should be shared across participants. We need an experiment or setup that either estimates what this should be across everyone, -or- we should do a sort of partial pooling across everyone, so $k \sim N(\mu_F, \sigma^2)$ where the distribution is shared across everyone, or the mean is different but the variance is shared, or something. Regardless, we'd have to estimate either $k$ for everyone, or the paramaters for its distribution. Perhaps we could do this in some Bayesian way.
-
-ALSO try ARMA
-
-(EXPLAIN other model configurations)
+where $H(d)$ denotes the 24 hourly buckets following 3pm local time. Because the reward is defined using the latent counts $N_t$, the model can be used to reconstruct daily rewards even when hourly Fitbit observations are missing.
 
 
-
-### Benchmarks
-
-Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation). 5) Correlation with the observed hourly buckets, and observed daily reward.
-
-Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, daz`ta. (We also observe how different levels of masking affect the result).
-
-For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
 
 ## Limitations of Benchmark
 
@@ -1977,6 +1992,15 @@ plt.show()
 Notice that the estimated latent reward always upper bounds the observed reward. This is because it's a sum of hourly buckets, for which many of the observations are missing. The second plot (maybe include a trend line?) shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is the point of using a latent model to begin-with, we expect that there are many steps the participant is taking that aren't being picked up. However, this introduces great challenges in benchmarking (elaborate on challenges?).
 
 Maybe do for three participants? Low medium high missingness.
+
+### Benchmarks
+
+Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation). 5) Correlation with the observed hourly buckets, and observed daily reward.
+
+Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, data. (We also observe how different levels of masking affect the result).
+
+For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
+
 
 ## Aggregate modeling
 
