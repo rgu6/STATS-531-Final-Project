@@ -164,6 +164,7 @@ def _unmasked_fit_identity(
             "kind": "unmasked_fit",
             "model_family": str(model_family),
             "pooling_mode": str(pooling_mode),
+            "arma_prediction_schema": "stable_v1" if str(model_family) == "arma_aic" else None,
             **_fit_identity_context(
                 resolved_config=resolved_config,
                 participant_ids=participant_ids,
@@ -187,6 +188,7 @@ def _masked_fit_identity(
             "kind": "masked_fit",
             "model_family": str(model_family),
             "pooling_mode": str(pooling_mode),
+            "arma_prediction_schema": "stable_v1" if str(model_family) == "arma_aic" else None,
             "mask_id": str(mask_id),
             "mask_regime": resolved_config["mask_regime"],
             "missing_fraction": float(resolved_config["missing_fraction"]),
@@ -753,6 +755,17 @@ def _arma_grid(rl: int) -> list[tuple[int, int]]:
     return [(p, q) for p in values for q in values if not (p == 0 and q == 0)]
 
 
+def _stable_steps_from_predicted_log(predicted_log: pd.Series, observed_steps: pd.Series) -> pd.Series:
+    finite_observed = pd.to_numeric(observed_steps, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    observed_max = float(finite_observed.max()) if not finite_observed.empty else np.nan
+    if not np.isfinite(observed_max) or observed_max <= 0:
+        prediction_cap = 100_000.0
+    else:
+        prediction_cap = max(1.0, observed_max * 10.0)
+    clipped_log = pd.to_numeric(predicted_log, errors="coerce").clip(upper=np.log1p(prediction_cap))
+    return pd.Series(np.expm1(clipped_log), index=predicted_log.index, dtype="float64").clip(lower=0.0)
+
+
 def _run_arma_participant(
     participant_data: HourlyStepModelData,
     *,
@@ -783,7 +796,7 @@ def _run_arma_participant(
         raise ValueError(f"No ARMA model converged for participant {participant_data.participant_id}")
 
     predicted_log = pd.Series(best_result.predict(start=0, end=len(frame) - 1), index=frame.index, dtype="float64")
-    predicted_steps = np.expm1(predicted_log).clip(lower=0.0)
+    predicted_steps = _stable_steps_from_predicted_log(predicted_log, _optional_numeric(frame, "fitbit_steps_obs"))
     plot_frame = frame.copy()
     plot_frame["latent_fitbit_scale_steps"] = predicted_steps
     plot_frame["fitbit_steps_obs_fitted"] = predicted_steps
