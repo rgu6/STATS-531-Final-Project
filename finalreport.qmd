@@ -76,25 +76,20 @@ When a participant does not wear the watch, no step count data are collected dur
 
 Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
 
-## Multiple Device Analysis
+## Exploratory Data Analysis
 
-For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device. A significant portion of people use multiple devices as can be seen in the table below.
+For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device. 
 
-
+The FitbitHourly.csv file contains data from 299 participants with Fitbit data. We limited our analysis to the period from July 1, 2024, to September 30, 2024. Additionally, we filtered for participants with Fitbit step data in at least half of their hourly rows, which left us with 78 participants.
 
 <!--
-| Apple | Fitbit | Garmin | Apple + Fitbit | Fitbit + Garmin | Apple + Garmin | All Three | Total
-|---|---|---|
-| 557 | 82 | C |
-:  {#tbl-letters}
--->
-
 (PRUNE FitbitHourly.csv to only July 1 to September 30, readjust back to local time)
 
 The FitbitHourly.csv dataset contains wearable data from July 1, 2024 to September 30, 2024 for 299 participants. We analyze the 78 participants who have Fitbit steps data for at least half of their hourly rows. 
 
 Notes:
 * sample statistics like mean steps, std, mean steps per hourly non-missing bucket, missingness, maybe box plot for missingness (min, max, quartiles).
+-->
 
 ```{python}
 # | echo: false
@@ -109,184 +104,57 @@ import re
 ```{python}
 # | echo: false
 # | label: eda-read-data
+
 # read in dataset
-fitbit_hourly = pd.read_csv("FitbitHourly.csv")
-# fitbit_hourly.head()
+df = pd.read_csv("FitbitHourly.csv")
+
+# prune for July 1 to September 30 and readjust back to local time
+prune_df = df[(df["date_utc"] >= "2024-07-01") & (df["date_utc"] <= "2024-09-30")]
+
+# participants with Fitbit steps data for at least half of their hourly rows -> need at least 1104 rows filled out
+valid_ids = (
+    prune_df.groupby('PARTICIPANTIDENTIFIER')['fitbitStepsMissing']
+      .sum()
+      .loc[lambda x: x <= 1104]
+      .index
+)
+prune_df = prune_df[prune_df['PARTICIPANTIDENTIFIER'].isin(valid_ids)]
 ```
+
+The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering for hours with non-missing data. It can be seen that there is a positive relationship and that the variance is larger than the mean.
 
 ```{python}
 # | echo: false
-# count how many participants are in the dataset
-# num_participants = fitbit_hourly['PARTICIPANTIDENTIFIER'].nunique()
-# print(f"There are {num_participants} participants in the dataset.")
-```
 
-```{python}
-# | echo: false
-# | label: fitbit-missing
-# for each participant, get the mean value of the fitbitStepsMissing column (0 = step count recorded, 1 = missing) for a percent of how many hourly windows we have steps missing for.
-fitbit_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['fitbitStepsMissing'].mean() * 100).sort_values(ascending=True)
+# scatter plot of mean versus standard deviation of fitbit steps for non-missing buckets
+# each dot represents one of the 78 participants
 
-# # count how many have at least 50% of hours with a step count recorded
-# num_participants_50_percent_fitbit = (fitbit_steps_missing_percent < 50).sum()
-# print(f"{num_participants_50_percent_fitbit} participants have at least 50% of hours with a fitbit step count recorded.")
-```
+stats = nonMissing.groupby('PARTICIPANTIDENTIFIER')['fitbitSteps'].agg(
+    ['mean', 'median', 'std', 'min', 'max', 'count']
+).reset_index()
 
-```{python}
-# | echo: false
-# | label: apple-missing
-# repeat for apple
-# apple_steps_missing_percent = (fitbit_hourly.groupby('PARTICIPANTIDENTIFIER')['appleStepsMissing'].mean() * 100).sort_values(ascending=True)
-
-# print(apple_steps_missing_percent.head())
-
-# # count how many have at least 50% of hours with a step count recorded
-# num_participants_50_percent_apple = (apple_steps_missing_percent < 50).sum()
-# print(f"{num_participants_50_percent_apple} participants have at least 50% of hours with a step count recorded with apple watch.")
-
-```
-
-```{python}
-# | echo: false
-# | label: missingness-histogram
-# plot histogram of percent of hours with a step count missing for each participant for fitbit and apple
-# add same y-axis limits for both plots for easier comparison
-
-sns.histplot(fitbit_steps_missing_percent, bins=20, color='steelblue',
-                edgecolor='black')
-plt.xlabel('Percent of hours with a step count missing (Fitbit)')
-plt.ylabel('Number of participants')
-plt.title('Distribution of percent of hours with a step count missing for Fitbit')
-plt.ylim(0, 205)
+plt.scatter(stats['mean'], stats['std'])
+plt.xlabel('Mean Fitbit Steps')
+plt.ylabel('Standard Deviation of Fitbit Steps')
+plt.title('Mean vs Variability in Steps (Non-Missing Hourly Buckets)')
 plt.show()
-
-# sns.histplot(apple_steps_missing_percent, bins=20, color='steelblue',
-#                 edgecolor='black')
-# plt.xlabel('Percent of hours with a step count missing (Apple)')
-# plt.ylabel('Number of participants')
-# plt.title('Distribution of percent of hours with a step count missing for Apple')
-# plt.ylim(0, 205)
-# plt.show()
-
 ```
+
+Here is a boxplot of the percentage of hours that have missing step count data for each user.
 
 ```{python}
-# | echo: false
-# | label: combined-device-missing
-# If we combined step count metrics from fitbit and apple, how many participants would have at least 50% hours recorded?
-# missing on "either device" means missing on BOTH devices that hour
+missing = prune_df[prune_df['fitbitStepsMissing'] == 1]
+counts = missing.groupby('PARTICIPANTIDENTIFIER').size()
+percent_missing = (counts / 2208) * 100
 
-# combined_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].min(axis=1)  # 0 if either recorded, 1 if both missing
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# # percent missing per participant
-# combined_steps_missing_percent = (
-#     combined_missing_hour
-#     .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
-#     .mean()
-#     .mul(100)
-#     .sort_values(ascending=True)
-# )
-
-# # 3) participants with at least 50% hours recorded => missing < 50%
-# num_participants_50_percent_combined = (combined_steps_missing_percent < 50).sum()
-# print(f"{num_participants_50_percent_combined} participants have at least 50% of hours with a step count recorded on either device.")
+sns.boxplot(y=percent_missing)
+plt.ylabel('Percent Missing (%)')
+plt.title('Missing Data per Participant')
+plt.show()
 ```
-
-```{python}
-# | echo: false
-# | label: both-devices-50
-# how many participants have a recording for both devices (fitbit and apple) for at least 50% of hours?
-# both_missing_hour = fitbit_hourly[["fitbitStepsMissing", "appleStepsMissing"]].max(axis=1)  # 0 if both recorded, 1 if either missing
-# both_steps_missing_percent = (
-#     both_missing_hour
-#     .groupby(fitbit_hourly["PARTICIPANTIDENTIFIER"])
-#     .mean()
-#     .mul(100)
-#     .sort_values(ascending=True)
-# )
-# num_participants_50_percent_both = (both_steps_missing_percent < 50).sum()
-# print(f"{num_participants_50_percent_both} participants have at least 50% of hours with a step count recorded on both devices.")
-
-# # Participant identifiers with at least 50% of hours recorded for both devices
-# both_steps_missing_percent[both_steps_missing_percent < 50]
-```
-
-
-<!-- 
-This is some UM-GPT code that is trying to plot the distribution of percent missingness for each combination of metric/device across participants. It's almost working, the issue is that the metric columns and the Missing columns have different names (e.g. appleHRAvg vs appleHRMissing (needs to be appleHRAvgMissing). If that gets corrected we could plot all of the metrics and use their missingness as extra justification for picking the steps as an outcome variable. Right now it only works for plotting steps. Also, some of the Missing columns have NaN instead of 0/1, which should probably be replace with 1 but should be double-checked.
--->
-
-```{python}
-# | echo: false
-# df = fitbit_hourly
-
-# ignore = {"moodScore", "messageSent", "messageStrategy"}
-
-# # Missing-indicator columns (0 recorded, 1 missing; but may contain NaN)
-# missing_cols = [c for c in df.columns if c.endswith("Missing") and c not in ignore]
-
-# # IMPORTANT: if Missing columns have NaN (common when a device wasn't used),
-# # decide how to treat them. Usually: NaN => missing (1).
-# df2 = df.copy()
-# df2[missing_cols] = df2[missing_cols].fillna(1)
-
-# def parse_missing_col(c):
-#     base = c[:-len("Missing")]
-#     m = re.match(r"^(apple|fitbit|garmin)(.+)$", base)
-#     if m:
-#         return m.group(1), m.group(2)  # device, metric (e.g., Steps, HRAvg, SleepMinutes)
-#     return None, base
-
-# # fraction missing per participant per metric/device
-# long = (
-#     df2.groupby("PARTICIPANTIDENTIFIER")[missing_cols]
-#        .mean()                       # mean of 0/1 = fraction missing
-#        .reset_index()
-#        .melt(id_vars="PARTICIPANTIDENTIFIER",
-#              var_name="missing_col",
-#              value_name="frac_missing")
-# )
-
-# long["pct_missing"] = 100 * long["frac_missing"]
-# long[["device", "metric"]] = long["missing_col"].apply(lambda c: pd.Series(parse_missing_col(c)))
-
-# # Choose which metrics to facet (these are the parsed metric names)
-# metric_groups = ["Steps"]#, "HRAvg", "HRMin", "HRMax", "HRVAvg", "SleepMinutes"]
-# plot_df = long[long["device"].notna() & long["metric"].isin(metric_groups)].copy()
-
-# # Optional: nicer label for sleep
-# plot_df["metric"] = plot_df["metric"].replace({"SleepMinutes": "SleepMinutes"})
-
-# plot_df["device"] = pd.Categorical(plot_df["device"], ["apple", "fitbit", "garmin"], ordered=True)
-# plot_df["metric"]  = pd.Categorical(plot_df["metric"], metric_groups, ordered=True)
-
-# sns.set(style="whitegrid")
-
-# g = sns.FacetGrid(
-#     plot_df,
-#     row="metric",
-#     col="device",
-#     margin_titles=True,
-#     height=2.4,
-#     aspect=1.4,
-#     sharex=True,
-#     sharey=True
-# )
-# g.map_dataframe(
-#     sns.histplot,
-#     x="pct_missing",
-#     bins=20,
-#     color="steelblue",
-#     edgecolor="black"
-# )
-
-# g.set_axis_labels("Percent missing (per participant)", "Participants")
-# g.set_titles(row_template="{row_name}", col_template="{col_name}")
-# plt.tight_layout()
-# plt.show()
-```
-
-
 
 ### Model
 
@@ -2065,6 +1933,16 @@ paragraph 2: limitations, direction for future analysis, wrap up sentence
 
 Limitations:
 Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules). Models we didn't get to try. How much masking affects performance. Different ways of doing masking (contiguous, across whole days, totally random, etc).
+
+Limitations Draft:
+
+Due to time limitations, there are several additional methods we would have liked to explore in our model specification. For $$log \lambda_t$$, we would have liked to include additional covariates related to physical activity, such as heart rate and sleep. Our current latent process model only incorporates baseline averages over hour of day and week. Additionally, we were not able to model the measurement distribution jointly across all three devices for participants who used multiple devices, and therefore could not fully leverage all available data. Instead, we focused primarily on Fitbit data due to difficulties in disentangling device-specific biases. In terms of parameter sharing, we also considered clustering participants based on shared characteristics, such as similar sleep schedules, to better capture common behavioral patterns.
+
+In terms of model structure, there are also limitations imposed by the pypomp library. We initially intended to include a broader set of covariates and use LASSO regularization for participant-specific feature selection to improve flexibility in modeling long-term dependencies. However, this was not feasible within the current framework.
+
+There are also more robust approaches we could have used to evaluate model accuracy. In our analysis, we only applied masking to 20% of non-missing hourly observations per participant. Future work could explore a range of masking proportions to assess sensitivity to missingness. Additionally, masking could be applied in different structures, such as contiguous hourly blocks, full-day removals, or random missingness patterns.
+
+Finally, there are limitations in our choice of benchmark and evaluation metric. We used masked subtotal error, defined as the difference between predicted and observed values on masked non-missing hourly observations. This choice was necessary because observed step counts during missing periods are recorded as zero, which may not reflect true step counts if participants were not wearing their devices. As a result, computing error against these zeros would be misleading. Instead, we restricted evaluation to masked data that was originally observed. If more time were available, we would conduct simulation studies with known latent step counts to compute a more standard metric such as RMSE.
 
 # Contributions
 - Group Member 1: 
