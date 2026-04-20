@@ -1477,6 +1477,198 @@ def build_timing_table(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _comparable_numeric_frame(truth: pd.Series, estimate: pd.Series) -> pd.DataFrame:
+    comparable = pd.DataFrame(
+        {
+            "truth": pd.to_numeric(truth, errors="coerce"),
+            "estimate": pd.to_numeric(estimate, errors="coerce"),
+        }
+    ).dropna()
+    if comparable.empty:
+        return comparable
+    finite_mask = np.isfinite(comparable["truth"]) & np.isfinite(comparable["estimate"])
+    return comparable.loc[finite_mask].reset_index(drop=True)
+
+
+def _safe_rmse(truth: pd.Series, estimate: pd.Series) -> float:
+    comparable = _comparable_numeric_frame(truth, estimate)
+    if comparable.empty:
+        return float("nan")
+    return float(np.sqrt(np.mean(np.square(comparable["estimate"] - comparable["truth"]))))
+
+
+def _safe_corr(truth: pd.Series, estimate: pd.Series) -> float:
+    comparable = _comparable_numeric_frame(truth, estimate)
+    if len(comparable) < 2:
+        return float("nan")
+    return float(comparable["truth"].corr(comparable["estimate"]))
+
+
+def summarize_hourly_metrics_by_participant(hourly_frame: pd.DataFrame) -> pd.DataFrame:
+    if hourly_frame.empty or "participant_id" not in hourly_frame.columns:
+        return pd.DataFrame(columns=["participant_id", "hourly_rmse", "hourly_correlation", "hourly_benchmark_hours"])
+    benchmark = build_masked_hourly_benchmark_frame(
+        hourly_frame,
+        truth_column="fitbit_truth_for_eval",
+        mask_flag_column="fitbit_masked_for_eval",
+        positive_truth_only=True,
+        estimate_columns=["latent_fitbit_scale_steps"],
+    )
+    if benchmark.empty:
+        return pd.DataFrame(columns=["participant_id", "hourly_rmse", "hourly_correlation", "hourly_benchmark_hours"])
+    rows: list[dict[str, object]] = []
+    for participant_id, part in benchmark.groupby("participant_id", dropna=False):
+        truth = pd.to_numeric(part["benchmark_truth_for_eval"], errors="coerce")
+        estimate = pd.to_numeric(part["latent_fitbit_scale_steps"], errors="coerce")
+        rows.append(
+            {
+                "participant_id": str(participant_id),
+                "hourly_rmse": _safe_rmse(truth, estimate),
+                "hourly_correlation": _safe_corr(truth, estimate),
+                "hourly_benchmark_hours": int(_comparable_numeric_frame(truth, estimate).shape[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_reward_metrics_by_participant(reward_frame: pd.DataFrame) -> pd.DataFrame:
+    if reward_frame.empty or "participant_id" not in reward_frame.columns:
+        return pd.DataFrame(columns=["participant_id", "reward_rmse", "daily_correlation", "reward_windows_compared"])
+    rows: list[dict[str, object]] = []
+    for participant_id, part in reward_frame.groupby("participant_id", dropna=False):
+        truth = pd.to_numeric(part["observed_subtotal"], errors="coerce")
+        estimate = pd.to_numeric(part["predicted_full_24h_reward"], errors="coerce")
+        comparable = _comparable_numeric_frame(truth, estimate)
+        rows.append(
+            {
+                "participant_id": str(participant_id),
+                "reward_rmse": _safe_rmse(truth, estimate),
+                "daily_correlation": _safe_corr(truth, estimate),
+                "reward_windows_compared": int(len(comparable)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_daily_heldout_metrics_by_participant(hourly_frame: pd.DataFrame, reward_frame: pd.DataFrame) -> pd.DataFrame:
+    if (
+        hourly_frame.empty
+        or reward_frame.empty
+        or "participant_id" not in hourly_frame.columns
+        or "participant_id" not in reward_frame.columns
+    ):
+        return pd.DataFrame(columns=["participant_id", "daily_rmse_sqrtm", "daily_rmse", "heldout_daily_correlation", "daily_windows_used"])
+    rows: list[dict[str, object]] = []
+    for participant_id in sorted(set(reward_frame["participant_id"].astype(str))):
+        hourly_part = hourly_frame.loc[hourly_frame["participant_id"].astype(str) == str(participant_id)].reset_index(drop=True)
+        reward_part = reward_frame.loc[reward_frame["participant_id"].astype(str) == str(participant_id)].reset_index(drop=True)
+        detail = build_heldout_subtotal_benchmark_frame(
+            hourly_part,
+            reward_part,
+            truth_column="fitbit_truth_for_eval",
+            estimate_column="latent_fitbit_scale_steps",
+            mask_flag_column="fitbit_masked_for_eval",
+        )
+        if detail.empty:
+            rows.append(
+                {
+                    "participant_id": str(participant_id),
+                    "daily_rmse_sqrtm": np.nan,
+                    "daily_rmse": np.nan,
+                    "heldout_daily_correlation": np.nan,
+                    "daily_windows_used": 0,
+                }
+            )
+            continue
+        truth = pd.to_numeric(detail["heldout_true_subtotal"], errors="coerce")
+        estimate = pd.to_numeric(detail["heldout_predicted_subtotal"], errors="coerce")
+        normalized_error = pd.to_numeric(detail["heldout_subtotal_error_sqrtm"], errors="coerce")
+        rows.append(
+            {
+                "participant_id": str(participant_id),
+                "daily_rmse_sqrtm": float(np.sqrt(np.nanmean(np.square(normalized_error)))) if normalized_error.notna().any() else np.nan,
+                "daily_rmse": _safe_rmse(truth, estimate),
+                "heldout_daily_correlation": _safe_corr(truth, estimate),
+                "daily_windows_used": int(_comparable_numeric_frame(truth, estimate).shape[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_model_level_metric_tables(
+    masked_fits: dict[tuple[str, str, str], dict[str, object]],
+    parameter_summary: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    metric_rows: list[pd.DataFrame] = []
+    for (model_family, pooling_mode, mask_id), artifact in masked_fits.items():
+        hourly_metrics = summarize_hourly_metrics_by_participant(artifact.get("hourly_prediction_frame", pd.DataFrame()))
+        reward_metrics = summarize_reward_metrics_by_participant(artifact.get("reward_window_frame", pd.DataFrame()))
+        daily_metrics = summarize_daily_heldout_metrics_by_participant(
+            artifact.get("hourly_prediction_frame", pd.DataFrame()),
+            artifact.get("reward_window_frame", pd.DataFrame()),
+        )
+        combined = hourly_metrics.merge(reward_metrics, how="outer", on="participant_id").merge(
+            daily_metrics,
+            how="outer",
+            on="participant_id",
+        )
+        if combined.empty:
+            continue
+        combined["model_family"] = str(model_family)
+        combined["pooling_mode"] = str(pooling_mode)
+        combined["mask_id"] = str(mask_id)
+        metric_rows.append(combined)
+
+    participant_metric_frame = pd.concat(metric_rows, ignore_index=True) if metric_rows else pd.DataFrame()
+    if participant_metric_frame.empty:
+        empty = pd.DataFrame()
+        return empty, empty, empty
+
+    model_metric_summary = (
+        participant_metric_frame.groupby(["model_family", "pooling_mode"], as_index=False)
+        .agg(
+            hourly_rmse=("hourly_rmse", "mean"),
+            reward_rmse=("reward_rmse", "mean"),
+            daily_rmse_sqrtm=("daily_rmse_sqrtm", "mean"),
+            mean_panel_unit_loglik=("participant_id", lambda _s: np.nan),
+            n_participants=("participant_id", "nunique"),
+        )
+    )
+
+    correlation_summary = (
+        participant_metric_frame.groupby(["model_family", "pooling_mode"], as_index=False)
+        .agg(
+            hourly_correlation_mean=("hourly_correlation", "mean"),
+            hourly_correlation_min=("hourly_correlation", "min"),
+            hourly_correlation_max=("hourly_correlation", "max"),
+            daily_correlation_mean=("daily_correlation", "mean"),
+            daily_correlation_min=("daily_correlation", "min"),
+            daily_correlation_max=("daily_correlation", "max"),
+            n_participants=("participant_id", "nunique"),
+        )
+    )
+
+    parameter_stats = pd.DataFrame()
+    if not parameter_summary.empty and {"model_family", "pooling_mode"}.issubset(parameter_summary.columns):
+        parameter_stats = (
+            parameter_summary.groupby(["model_family", "pooling_mode"], as_index=False)
+            .agg(
+                mean_panel_unit_loglik=("panel_unit_loglik", "mean"),
+                mean_phi=("phi", "mean"),
+                mean_sigma=("sigma", "mean"),
+                mean_k=("k_fitbit", "mean"),
+                sd_k=("k_fitbit", "std"),
+            )
+        )
+
+    model_metric_summary = model_metric_summary.drop(columns=["mean_panel_unit_loglik"], errors="ignore").merge(
+        parameter_stats,
+        how="left",
+        on=["model_family", "pooling_mode"],
+    )
+    return model_metric_summary, correlation_summary, participant_metric_frame
+
+
 @dataclass(frozen=True)
 class CovariateSpec:
     key: str
@@ -3282,6 +3474,10 @@ The aggregate analysis uses the same CSV as the individual section, but runs a c
 #| label: aggregate-imports
 
 from helpers.computedraft_pipeline import run_cache_first_pipeline
+from src.ihs_eda.step_pomp import (
+    build_heldout_subtotal_benchmark_frame,
+    build_masked_hourly_benchmark_frame,
+)
 ```
 
 ```{python}
@@ -3338,6 +3534,11 @@ aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", 
 aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
 aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
 aggregate_timing_summary = aggregate_result.timing_summary.copy()
+aggregate_masked_fits = aggregate_derived_artifact.get("masked_fits", {})
+aggregate_model_metric_summary, aggregate_correlation_summary, aggregate_participant_metric_frame = build_model_level_metric_tables(
+    aggregate_masked_fits,
+    aggregate_parameter_summary,
+)
 
 if (
     not aggregate_model_comparison.empty
@@ -3499,27 +3700,214 @@ else:
         display_table(table_frame, precision=3)
 ```
 
-## Diagnostics
+```{python}
+#| echo: false
+#| label: aggregate-model-metric-summary
+
+if aggregate_model_metric_summary.empty:
+    print("No participant-averaged model metric summary is available.")
+else:
+    print("Participant-averaged metrics. These differ from the pooled benchmark table above because each participant contributes one score before averaging.")
+    model_metric_display = (
+        aggregate_model_metric_summary.assign(
+            pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
+                {
+                    "unit_specific": "unit",
+                    "global_shared_k": "global_k",
+                    "partial_pooled_k": "partial_k",
+                    "not_applicable": "-",
+                }
+            )
+        ).loc[
+            :,
+            [
+                column
+                for column in [
+                    "model_family",
+                    "pooling_mode",
+                    "mean_panel_unit_loglik",
+                    "hourly_rmse",
+                    "reward_rmse",
+                    "daily_rmse_sqrtm",
+                ]
+                if column in aggregate_model_metric_summary.columns
+            ],
+        ]
+        .rename(
+            columns={
+                "model_family": "model",
+                "pooling_mode": "pooling",
+                "mean_panel_unit_loglik": "avg logLik",
+                "hourly_rmse": "hr RMSE",
+                "reward_rmse": "reward RMSE",
+                "daily_rmse_sqrtm": "daily RMSE/sqrt(m)",
+            }
+        )
+        .sort_values(["model", "pooling"], na_position="last")
+        .reset_index(drop=True)
+    )
+    display_table(model_metric_display, precision=2)
+```
 
 ```{python}
 #| echo: false
-#| label: aggregate-parameter-table
+#| label: aggregate-correlation-summary
 
-if aggregate_parameter_summary.empty:
-    print("No participant-level parameter summary is available.")
+if aggregate_correlation_summary.empty:
+    print("No participant-averaged correlation summary is available.")
 else:
-    selected_parameter_display = (
-        aggregate_parameter_summary.loc[
-            aggregate_parameter_summary["model_family"].astype(str) == str(aggregate_config["model_family"])
+    print("Participant-averaged correlations. These are computed per participant first, then averaged by model.")
+    correlation_display = (
+        aggregate_correlation_summary.assign(
+            pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
+                {
+                    "unit_specific": "unit",
+                    "global_shared_k": "global_k",
+                    "partial_pooled_k": "partial_k",
+                    "not_applicable": "-",
+                }
+            )
+        ).loc[
+            :,
+            [
+                column
+                for column in [
+                    "model_family",
+                    "pooling_mode",
+                    "hourly_correlation_mean",
+                    "hourly_correlation_min",
+                    "hourly_correlation_max",
+                    "daily_correlation_mean",
+                    "daily_correlation_min",
+                    "daily_correlation_max",
+                ]
+                if column in aggregate_correlation_summary.columns
+            ],
         ]
-        .copy()
+        .rename(
+            columns={
+                "model_family": "model",
+                "pooling_mode": "pooling",
+                "hourly_correlation_mean": "avg hr corr",
+                "hourly_correlation_min": "min hr corr",
+                "hourly_correlation_max": "max hr corr",
+                "daily_correlation_mean": "avg day corr",
+                "daily_correlation_min": "min day corr",
+                "daily_correlation_max": "max day corr",
+            }
+        )
+        .sort_values(["model", "pooling"], na_position="last")
         .reset_index(drop=True)
     )
-    if selected_parameter_display.empty:
-        selected_parameter_display = aggregate_parameter_summary.copy()
-    for table_title, table_frame in build_parameter_tables(selected_parameter_display):
-        print(table_title)
-        display_table(table_frame, precision=3)
+    display_table(correlation_display, precision=2)
+```
+
+```{python}
+#| echo: false
+#| label: aggregate-parameter-summary
+
+if aggregate_model_metric_summary.empty:
+    print("No aggregate parameter summary is available.")
+else:
+    parameter_metric_display = (
+        aggregate_model_metric_summary.assign(
+            pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
+                {
+                    "unit_specific": "unit",
+                    "global_shared_k": "global_k",
+                    "partial_pooled_k": "partial_k",
+                    "not_applicable": "-",
+                }
+            )
+        ).loc[
+            :,
+            [
+                column
+                for column in [
+                    "model_family",
+                    "pooling_mode",
+                    "mean_phi",
+                    "mean_sigma",
+                    "mean_k",
+                    "sd_k",
+                ]
+                if column in aggregate_model_metric_summary.columns
+            ],
+        ]
+        .rename(
+            columns={
+                "model_family": "model",
+                "pooling_mode": "pooling",
+                "mean_phi": "avg phi",
+                "mean_sigma": "avg sigma",
+                "mean_k": "avg k",
+                "sd_k": "sd k",
+            }
+        )
+        .sort_values(["model", "pooling"], na_position="last")
+        .reset_index(drop=True)
+    )
+    display_table(parameter_metric_display, precision=2)
+```
+
+## Participant Scatterplots
+
+```{python}
+#| echo: false
+#| label: aggregate-parameter-scatterplots
+
+scatter_source = aggregate_parameter_summary.copy()
+if not scatter_source.empty:
+    scatter_source = scatter_source.loc[
+        scatter_source["model_family"].astype(str) == str(aggregate_config["model_family"])
+    ].copy()
+if scatter_source.empty and not aggregate_parameter_summary.empty:
+    scatter_source = aggregate_parameter_summary.copy()
+
+required_columns = {"phi", "sigma", "k_fitbit"}
+if scatter_source.empty or not required_columns.issubset(scatter_source.columns):
+    print("No participant-level phi / sigma / k estimates are available for scatter plots.")
+else:
+    scatter_source["pooling_mode"] = scatter_source["pooling_mode"].astype(str)
+    color_map = {
+        "unit_specific": "#1f77b4",
+        "global_shared_k": "#ff7f0e",
+        "partial_pooled_k": "#2ca02c",
+        "not_applicable": "#7f7f7f",
+    }
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+    scatter_specs = [
+        ("phi", "sigma", "phi vs sigma"),
+        ("sigma", "k_fitbit", "sigma vs k"),
+        ("phi", "k_fitbit", "phi vs k"),
+    ]
+    for ax, (x_col, y_col, title) in zip(axes, scatter_specs):
+        plotted_labels = set()
+        for pooling_mode, part in scatter_source.groupby("pooling_mode", dropna=False):
+            x_values = pd.to_numeric(part[x_col], errors="coerce")
+            y_values = pd.to_numeric(part[y_col], errors="coerce")
+            valid = pd.DataFrame({"x": x_values, "y": y_values}).dropna()
+            if valid.empty:
+                continue
+            label = str(pooling_mode)
+            ax.scatter(
+                valid["x"],
+                valid["y"],
+                s=28,
+                alpha=0.80,
+                color=color_map.get(label, "#444444"),
+                label=label if label not in plotted_labels else None,
+            )
+            plotted_labels.add(label)
+        ax.set_title(title)
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.grid(True, alpha=0.25)
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        axes[0].legend(handles, labels, title="pooling", fontsize=9)
+    plt.tight_layout()
+    plt.show()
 ```
 
 ```{python}

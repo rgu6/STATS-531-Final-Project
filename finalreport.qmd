@@ -329,7 +329,7 @@ ALSO try ARMA
 
 ### Benchmarks
 
-Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation).
+Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation). 5) Correlation with the observed hourly buckets, and observed daily reward.
 
 Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, daz`ta. (We also observe how different levels of masking affect the result).
 
@@ -338,9 +338,6 @@ For pedagogical purposes, we visualize individual and group level models with th
 ## Limitations of Benchmark
 
 # Methodology and Results
-
-
-
 
 
 ## Individual
