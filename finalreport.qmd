@@ -1188,19 +1188,6 @@ participant_summary = pd.DataFrame(
 display_table(participant_summary, precision=2)
 ```
 
-
-
-
-
-
-
-
-###  Initial Parameter Estimation
-
-This section can be for "fiddling" with parameters. Show a few plots of what the effect of changing phi vs sigma vs k is on an hourly bucket level, and on a 24 hour reward level.
-
-Here it might be pedagogically nice to display what hourly buckets look like, and then ultimately we aggregate those into 24 hour reward windows.
-
 ### Global Search
 
 What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
@@ -1897,7 +1884,7 @@ Explain the $k$ global pooling, and the $k$ partial pooling and penalty equation
 Global search parameters used, and challenges of running panel pomp on 6 models, across 78 individuals.
 
 
-## Benchmarks
+## Results
 
 
 Models we analyze:
