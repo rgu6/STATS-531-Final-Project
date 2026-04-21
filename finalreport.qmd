@@ -848,8 +848,8 @@ print(
 paragraph 1: filter for individuals with low missing rates
 
 ```{python}
-# | echo: false
-# | label: load-script
+#| echo: false
+#| label: load-script
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -858,8 +858,8 @@ import hw8_analysis as hw8
 ```
 
 ```{python}
-# | echo: false
-# | label: run-hw8
+#| echo: false
+#| label: run-hw8
 participant_ids = ["MDH-3531-4796", "MDH-4235-8718", "MDH-7960-3351"]
 
 analysis_cfg = hw8.AnalysisConfig(
@@ -913,8 +913,8 @@ What things do we say ABOUT a global search? Could do scatterplots of parameters
 We chose three participants to illustrate how different levels of missingness affect the model fitting and reward prediction. @reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. @residual-plot shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
 
 ```{python}
-# | echo: false
-# | label: concat-tables
+#| echo: false
+#| label: concat-tables
 # display tables
 
 participant_summary_all = pd.concat([r.participant_summary for r in results], ignore_index=True)
@@ -929,25 +929,25 @@ stage_all = pd.concat([r.global_stage_summary for r in results], ignore_index=Tr
 ```
 
 ```{python}
-# | echo: false
-# | label: tbl-participant-summary
-# | tbl-cap: "Participant-level summary of data completeness and reward windows"
+#| echo: false
+#| label: tbl-participant-summary
+#| tbl-cap: "Participant-level summary of data completeness and reward windows"
 
 display_table(participant_summary_all, precision=2)
 
 ```
 
 ```{python}
-# | echo: false
-# | label: tbl-global-mle
-# | tbl-cap: "Summary of global search results"
+#| echo: false
+#| label: tbl-global-mle
+#| tbl-cap: "Summary of global search results"
 
 display_table(global_best_all, precision=3)
 ```
 
 ```{python}
-# | echo: false
-# | label: reward-plot
+#| echo: false
+#| label: reward-plot
 def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     s = str(source).lower().strip()
     if s == "local":
@@ -986,8 +986,8 @@ plt.show()
 ```
 
 ```{python}
-# | echo: false
-# | label: residual-plot
+#| echo: false
+#| label: residual-plot
 # Residuals: all participants on one plot + per-participant trend line
 plot_source = residual_plot_fit_source
 
@@ -1208,6 +1208,14 @@ $$
 \mathrm{RMSE}_{\text{subtotal}/\sqrt{m}} = \sqrt{\frac{1}{D} \sum_{d=1}^{D} Z_d^2},
 $$
 
-# Local search?
+# Supplementary Tables
+
+```{python}
+# | echo: false
+# | label: local-global-tables
+display_table(local_mle_all, precision=3)
+display_table(stage_all, precision=3)
+display_table(coef_all, precision=3)
+```
 
 ## Additional background information
