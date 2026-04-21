@@ -71,6 +71,11 @@ params:
   stage2_fresh_random_starts: null
   stage1_jittered_restarts: null
   stage2_jittered_restarts: null
+  smoother_scope: "none"              # none | from_cache_only | compute_missing_only
+  smoother_method: "backward_particle" # currently only backward_particle
+  backward_smoother_particles: null
+  backward_smoother_trajectories: null
+  backward_smoother_seed: null
   # Global search window overrides. Leave null to use the built-in defaults.
   # Only parameters active in the selected model / pooling mode matter.
   phi_window_low: null
@@ -157,6 +162,11 @@ stage1_fresh_random_starts = None
 stage2_fresh_random_starts = None
 stage1_jittered_restarts = None
 stage2_jittered_restarts = None
+smoother_scope = "none"
+smoother_method = "backward_particle"
+backward_smoother_particles = None
+backward_smoother_trajectories = None
+backward_smoother_seed = None
 phi_window_low = None
 phi_window_high = None
 phi1_window_low = None
@@ -254,6 +264,11 @@ def _raw_params() -> dict:
         "stage2_fresh_random_starts",
         "stage1_jittered_restarts",
         "stage2_jittered_restarts",
+        "smoother_scope",
+        "smoother_method",
+        "backward_smoother_particles",
+        "backward_smoother_trajectories",
+        "backward_smoother_seed",
         "phi_window_low",
         "phi_window_high",
         "phi1_window_low",
@@ -322,6 +337,11 @@ def get_rl_defaults(rl: int) -> dict[str, object]:
         "fit_scope": "both",
         "section_scope": "all",
         "global_seed": 531,
+        "smoother_scope": "none",
+        "smoother_method": "backward_particle",
+        "backward_smoother_particles": None,
+        "backward_smoother_trajectories": 80,
+        "backward_smoother_seed": None,
         "analysis_start_utc_iso": "2024-07-01T00:00:00+00:00",
         "analysis_end_utc_iso": "2024-09-30T23:00:00+00:00",
         "assumed_local_timezone": "America/New_York",
@@ -471,6 +491,9 @@ def resolve_config(raw_params: dict[str, object]) -> dict[str, object]:
         "stage2_fresh_random_starts",
         "stage1_jittered_restarts",
         "stage2_jittered_restarts",
+        "backward_smoother_particles",
+        "backward_smoother_trajectories",
+        "backward_smoother_seed",
     ):
         if resolved.get(name) is not None:
             resolved[name] = int(resolved[name])
@@ -524,6 +547,14 @@ def resolve_config(raw_params: dict[str, object]) -> dict[str, object]:
     ):
         if resolved.get(name) is None:
             resolved[name] = 0
+    resolved["smoother_scope"] = str(resolved.get("smoother_scope", "none")).strip().lower()
+    if resolved["smoother_scope"] not in {"none", "from_cache_only", "compute_missing_only"}:
+        raise ValueError("smoother_scope must be one of: none, from_cache_only, compute_missing_only")
+    resolved["smoother_method"] = str(resolved.get("smoother_method", "backward_particle")).strip().lower()
+    if resolved["smoother_method"] != "backward_particle":
+        raise ValueError("smoother_method currently supports only: backward_particle")
+    if resolved.get("backward_smoother_trajectories") is None:
+        resolved["backward_smoother_trajectories"] = 80
     return resolved
 
 
@@ -3623,14 +3654,21 @@ aggregate_derived_artifact = aggregate_result.derived_artifact
 aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", pd.DataFrame()).copy()
 aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
 aggregate_masked_fits = aggregate_derived_artifact.get("masked_fits", {})
+aggregate_smoother_artifacts = aggregate_derived_artifact.get("smoother_artifacts", {})
 aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
 if aggregate_parameter_summary.empty and aggregate_masked_fits:
     aggregate_parameter_summary = build_parameter_summary_from_masked_fits(aggregate_masked_fits)
 aggregate_timing_summary = aggregate_result.timing_summary.copy()
-aggregate_model_metric_summary, aggregate_correlation_summary, aggregate_participant_metric_frame = build_model_level_metric_tables(
-    aggregate_masked_fits,
-    aggregate_parameter_summary,
-)
+try:
+    aggregate_model_metric_summary, aggregate_correlation_summary, aggregate_participant_metric_frame = build_model_level_metric_tables(
+        aggregate_masked_fits,
+        aggregate_parameter_summary,
+    )
+except Exception as metric_exc:
+    print(f"Skipping participant-averaged metric table build due to: {metric_exc}")
+    aggregate_model_metric_summary = pd.DataFrame()
+    aggregate_correlation_summary = pd.DataFrame()
+    aggregate_participant_metric_frame = pd.DataFrame()
 
 if (
     not aggregate_model_comparison.empty
@@ -3681,6 +3719,11 @@ aggregate_settings_table = pd.DataFrame(
             "Stage 2 fresh starts": aggregate_config["stage2_fresh_random_starts"],
             "Stage 1 jittered": aggregate_config["stage1_jittered_restarts"],
             "Stage 2 jittered": aggregate_config["stage2_jittered_restarts"],
+            "Smoother scope": aggregate_config.get("smoother_scope", "none"),
+            "Smoother method": aggregate_config.get("smoother_method", "backward_particle"),
+            "Backward smoother particles": aggregate_config.get("backward_smoother_particles"),
+            "Backward smoother trajectories": aggregate_config.get("backward_smoother_trajectories"),
+            "Backward smoother seed": aggregate_config.get("backward_smoother_seed"),
         }
     ]
 )
@@ -3690,42 +3733,50 @@ aggregate_settings_table = pd.DataFrame(
 #| echo: false
 #| label: aggregate-model-metric-summary
 
-if aggregate_model_metric_summary.empty:
-    print("No participant-averaged model metric summary is available.")
+if aggregate_model_comparison.empty:
+    print("No aggregate model comparison summary is available.")
 else:
-    print("Participant-averaged metrics. These differ from the pooled benchmark table above because each participant contributes one score before averaging.")
+    print("Benchmark summary by model, pooling, and estimate type (filter vs smoothed).")
+    model_metric_source = aggregate_model_comparison.assign(
+        pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
+            {
+                "unit_specific": "unit",
+                "global_shared_k": "global_k",
+                "partial_pooled_k": "partial_k",
+                "not_applicable": "-",
+            }
+        ),
+        estimate_type=lambda df: df.get("estimate_type", pd.Series("filter", index=df.index)).astype(str).replace(
+            {
+                "filter": "filter",
+                "smoothed": "smoothed",
+            }
+        ),
+    )
+    for required_column in ["mean_panel_unit_loglik", "heldout_subtotal_rmse_sqrtm"]:
+        if required_column not in model_metric_source.columns:
+            model_metric_source[required_column] = np.nan
     model_metric_display = (
-        aggregate_model_metric_summary.assign(
-            pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
-                {
-                    "unit_specific": "unit",
-                    "global_shared_k": "global_k",
-                    "partial_pooled_k": "partial_k",
-                    "not_applicable": "-",
-                }
-            )
-        ).loc[
+        model_metric_source.loc[
             :,
             [
-                column
-                for column in [
-                    "model_family",
-                    "pooling_mode",
-                    "mean_panel_unit_loglik",
-                    "daily_rmse_sqrtm",
-                ]
-                if column in aggregate_model_metric_summary.columns
+                "model_family",
+                "pooling_mode",
+                "estimate_type",
+                "mean_panel_unit_loglik",
+                "heldout_subtotal_rmse_sqrtm",
             ],
         ]
         .rename(
             columns={
                 "model_family": "model",
                 "pooling_mode": "pooling",
+                "estimate_type": "estimate",
                 "mean_panel_unit_loglik": "avg logLik",
-                "daily_rmse_sqrtm": "RMSE Subtotal",
+                "heldout_subtotal_rmse_sqrtm": "RMSE Subtotal",
             }
         )
-        .sort_values(["model", "pooling"], na_position="last")
+        .sort_values(["model", "pooling", "estimate"], na_position="last")
         .reset_index(drop=True)
     )
     display_table(model_metric_display, precision=2)
@@ -3735,42 +3786,50 @@ else:
 #| echo: false
 #| label: aggregate-correlation-summary
 
-if aggregate_correlation_summary.empty:
-    print("No participant-averaged correlation summary is available.")
+if aggregate_model_comparison.empty:
+    print("No aggregate correlation summary is available.")
 else:
-    print("Participant-averaged correlations. These are computed per participant first, then averaged by model.")
+    print("Benchmark correlations by model, pooling, and estimate type.")
+    correlation_source = aggregate_model_comparison.assign(
+        pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
+            {
+                "unit_specific": "unit",
+                "global_shared_k": "global_k",
+                "partial_pooled_k": "partial_k",
+                "not_applicable": "-",
+            }
+        ),
+        estimate_type=lambda df: df.get("estimate_type", pd.Series("filter", index=df.index)).astype(str).replace(
+            {
+                "filter": "filter",
+                "smoothed": "smoothed",
+            }
+        ),
+    )
+    for required_column in ["hourly_masked_correlation", "daily_correlation"]:
+        if required_column not in correlation_source.columns:
+            correlation_source[required_column] = np.nan
     correlation_display = (
-        aggregate_correlation_summary.assign(
-            pooling_mode=lambda df: df["pooling_mode"].astype(str).replace(
-                {
-                    "unit_specific": "unit",
-                    "global_shared_k": "global_k",
-                    "partial_pooled_k": "partial_k",
-                    "not_applicable": "-",
-                }
-            )
-        ).loc[
+        correlation_source.loc[
             :,
             [
-                column
-                for column in [
-                    "model_family",
-                    "pooling_mode",
-                    "hourly_correlation_mean",
-                    "daily_correlation_mean",
-                ]
-                if column in aggregate_correlation_summary.columns
+                "model_family",
+                "pooling_mode",
+                "estimate_type",
+                "hourly_masked_correlation",
+                "daily_correlation",
             ],
         ]
         .rename(
             columns={
                 "model_family": "model",
                 "pooling_mode": "pooling",
-                "hourly_correlation_mean": "avg hr corr",
-                "daily_correlation_mean": "avg day corr",
+                "estimate_type": "estimate",
+                "hourly_masked_correlation": "avg hr corr",
+                "daily_correlation": "avg day corr",
             }
         )
-        .sort_values(["model", "pooling"], na_position="last")
+        .sort_values(["model", "pooling", "estimate"], na_position="last")
         .reset_index(drop=True)
     )
     display_table(correlation_display, precision=2)

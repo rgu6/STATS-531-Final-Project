@@ -219,19 +219,22 @@ $$
 
 where $H(d)$ denotes the 24 hourly buckets following 3pm local time. Because the reward is defined using the latent counts $N_t$, the model can be used to reconstruct daily rewards even when hourly Fitbit observations are missing.
 
-All 78 participants are jointly fit to personalized models in a "panel". We compare three variations of the model all sharing the AR(1) latent that differ in their measurement distribution, in how the observation-dispersion $k$ is handled: participant-specific $k$ with no pooling, a lobally shared $k$, and a partially pooled $k$. We refer to these as ar1personal, ar1global, and ar1partial respectively. Among the parameters $(\phi, sigma, k)$, $k$ was the most natural candidate for pooling because it governs the measurement dynamics of the Fitbit, which all participants are using.
+All 78 participants are jointly fit to personalized models in a "panel". We compare three variations of the model all sharing the AR(1) latent that differ in their measurement distribution, in how the observation-dispersion $k$ is handled: participant-specific $k_i$ with no pooling, a globally shared $k$, and a partially pooled $k_i$. We refer to these as ar1personal, ar1global, and ar1partial respectively. Among the parameters $(\phi, sigma, k)$, $k$ was the most natural candidate for pooling because it governs the measurement dynamics of the Fitbit, which all participants are using.
 
-In the no-pooling model, each participant has their own $\phi_i$, $\sigma_i$, and $k_i$. Here, the panel main serves as a convenient interface to fit many participant-specific, independent time
+In the no-pooling model, each participant has their own $\phi_i$, $\sigma_i$, and $k_i$. Here, the panel main serves as a convenient interface to fit many participant-specific, independent time series, but there is no information sharing across individuals. By contrast, in the globally pooled model, all participants share a single common value of $k$ learned jointly across all participants. This treatments Fitbit dispersion as a common feature across users.
 
-ith no pooling, global pooling, and partial pooling (we name these models ar1personal, ar1global, and ar1partial respectively). Because $k$ is a dispersion parameter in the measurement model of the Fitbit, of the three parameters, it was the most likely candidate for information to be pooled between participants.
+In partial pooling, each participant still has an individual dispersion parameter $k_i$, but they come from an enforced shared distribution. We set $k$ on a log scale as $\eta_i = \log k_i$, and assume $\eta_i \sim N(\mu_k, \tau_k^2)$. This enters the objective as a penalty:
 
-The global pooling merely sets each participant to learn the same $k$ value for everyone, while $\phi$ and $\sigma$ remain personal to each participant. This is done in pypomp by (explain how this is set in pypomp)
+$$
+\sum \limits_{i = 1}^n
+\ell_i(\phi_i, \sigma_i, e^{\eta_i})
+-\frac{1}{2\tau_k^2}
+\sum \limits_{i = 1}^n(\eta_i - \mu_k)^2
+- n \log \tau_k
+$$
+(check the -n log tau)
 
-The no pooling learns a unique $\phi,$ $k$, and $\sigma$ for each individual. Here, there's no cross-individual learning happening, so the panel only functions as a convenient way to batch many independent time series together.
-
-With partial pooling, we use add a penalty in the joint objective function
-
-Three variations to estimate $k$ are considered and benchmarked. 
+So the values of $\log k_i$ are pushed towards the common mean $\mu_k$; when $\tau_k$ is small, the shrinkage is strong and the model approach the global pool regime, while large $\tau_k$ implies weak shrinkage and the model approaches the no-pooling regime. Here, the filtering aims to learn the $\mu_k, \tau_k$ that maximizes this joint objective.
 
 # Methodology and Results
 
