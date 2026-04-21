@@ -1739,6 +1739,221 @@ Here we plot an estimate of the reconstructed latent reward, alongside the obser
 
 (How much masking causes how much RMSE? If there's room/time) 
 
+## Test hw8 script
+
+```{python}
+# | echo: false
+# | label: load-script
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+import hw8_analysis as hw8
+```
+
+```{python}
+# | echo: false
+# | label: run-hw8
+participant_ids = ["MDH-3531-4796", "MDH-4235-8718", "MDH-7960-3351"]
+
+analysis_cfg = hw8.AnalysisConfig(
+    analysis_start_utc_iso=analysis_start_utc_iso,
+    analysis_end_utc_iso=analysis_end_utc_iso,
+    participant_data_lookback_hours=participant_data_lookback_hours,
+    assumed_local_timezone=assumed_local_timezone,
+    participant_covariate_keys=list(participant_covariate_keys),
+    estimated_free_params=list(estimated_free_params),
+    initial_phi=initial_phi,
+    initial_sigma=initial_sigma,
+    initial_k_fitbit=initial_k_fitbit,
+    local_mle_particles=local_mle_particles,
+    local_mle_mif_iterations=local_mle_mif_iterations,
+    local_mle_random_seed=local_mle_random_seed,
+    local_mle_cooling_fraction=local_mle_cooling_fraction,
+    local_mle_rw_sd_scale=local_mle_rw_sd_scale,
+    local_mle_evaluation_particles=local_mle_evaluation_particles,
+    local_mle_evaluation_pfilter_reps=local_mle_evaluation_pfilter_reps,
+    global_search_random_seed=global_search_random_seed,
+    global_search_include_current_theta_as_start=global_search_include_current_theta_as_start,
+    global_search_jitter_scale=global_search_jitter_scale,
+    global_search_box_shrink_factor_per_stage=global_search_box_shrink_factor_per_stage,
+    global_start_box_phi_low=global_start_box_phi_low,
+    global_start_box_phi_high=global_start_box_phi_high,
+    global_start_box_sigma_low=global_start_box_sigma_low,
+    global_start_box_sigma_high=global_start_box_sigma_high,
+    global_start_box_k_fitbit_low=global_start_box_k_fitbit_low,
+    global_start_box_k_fitbit_high=global_start_box_k_fitbit_high,
+    global_search_stage_controls=list(global_search_stage_controls),
+)
+
+results = []
+for pid in participant_ids:
+    last4 = pid.split("-")[-1]
+    cache_cfg = hw8.CacheConfig(
+        enable_shelve_cache=enable_shelve_cache,
+        clear_shelve_cache=clear_shelve_cache,
+        cache_version_token=cache_version_token,
+        shelve_cache_directory=shelve_cache_directory,
+        shelve_cache_basename=f"example_{last4}",   # per participant
+        csv_path=str(CSV_PATH),
+    )
+    results.append(hw8.run_participant(pid, cache_cfg=cache_cfg, cfg=analysis_cfg))
+```
+
+```{python}
+# | echo: false
+# | label: display-tables
+# display tables
+
+participant_summary_all = pd.concat([r.participant_summary for r in results], ignore_index=True)
+participant_summary_all["Fitbit missingness percentage"] = participant_summary_all["Fitbit missingness percentage"].map(lambda x: f"{x:.2f}%")
+display_table(participant_summary_all, precision=2)
+
+local_mle_all = pd.concat([r.local_mle_summary for r in results], ignore_index=True).round(3)
+global_best_all = pd.concat([r.global_best_summary for r in results], ignore_index=True).round(3)
+coef_all = pd.concat([r.coefficient_table for r in results], ignore_index=True).round(3)
+stage_all = pd.concat([r.global_stage_summary for r in results], ignore_index=True).round(3)
+
+display_table(local_mle_all, precision=3)
+display_table(global_best_all, precision=3)
+display_table(stage_all, precision=3)
+display_table(coef_all, precision=3)
+```
+
+```{python}
+# | echo: false
+# | label: reward-plot
+def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
+    s = str(source).lower().strip()
+    if s == "local":
+        return r.local_run
+    return r.global_search_result.best_run
+
+plot_source = reward_plot_fit_source  # "local" or "global"
+n = len(results)
+fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(reward_plot_fig_width, reward_plot_fig_height * n), sharex=False)
+
+if n == 1:
+    axes = [axes]
+
+for ax, r in zip(axes, results):
+    run = select_run(r, plot_source)
+    reward_plot = run.reward_frame.copy()
+    reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
+    reward_plot["decision_date"] = pd.to_datetime(reward_plot["decision_local_time"], errors="coerce").dt.tz_localize(None)
+
+    ax.bar(reward_plot["decision_date"], reward_plot["latent_reward_24h"], color="#d69e2e", alpha=0.75, width=0.8, label="Filtered latent reward")
+    ax.plot(reward_plot["decision_date"], reward_plot["fitbit_observed_reward_24h"], color="#2b6cb0", linewidth=1.6, marker="o", markersize=3, label="Observed Fitbit subtotal")
+
+    ax.set_title(f"Reconstructed 24-hour reward ({plot_source}) — {r.participant_id}", fontsize=reward_plot_title_fontsize)
+    ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
+    ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
+    for label in ax.get_xticklabels():
+        label.set_rotation(45)
+        label.set_ha("right")
+
+axes[-1].set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
+axes[0].legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
+
+plt.tight_layout()
+plt.show()
+
+```
+
+```{python}
+plot_source = residual_plot_fit_source
+n = len(results)
+fig, axes = plt.subplots(nrows=1, ncols=n, figsize=(residual_plot_fig_width * n, residual_plot_fig_height), sharey=True)
+
+if n == 1:
+    axes = [axes]
+
+for ax, r in zip(axes, results):
+    run = select_run(r, plot_source)
+    df = run.reward_frame.copy()
+    df = df.loc[df["complete_window"]].copy()
+    df["missing_fitbit_hours"] = (24 - pd.to_numeric(df["fitbit_observed_hours"], errors="coerce").fillna(0.0)).round().clip(0, 24).astype(int)
+    df["reward_residual"] = pd.to_numeric(df["latent_reward_24h"], errors="coerce") - pd.to_numeric(df["fitbit_observed_reward_24h"], errors="coerce")
+
+    ax.scatter(df["missing_fitbit_hours"], df["reward_residual"], color="#d69e2e", edgecolor="#8c6d1f", alpha=0.8, s=40)
+    ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
+    ax.set_title(r.participant_id)
+    ax.set_xlabel("Missing hours")
+    ax.set_xlim(-0.5, 24.5)
+    ax.set_xticks(np.arange(0, 25, 4))
+
+axes[0].set_ylabel("Filtered reward − observed subtotal")
+plt.tight_layout()
+plt.show()
+```
+
+
+```{python}
+# Residuals: all participants on one plot + per-participant trend line
+plot_source = residual_plot_fit_source
+
+# Color-blind friendly palette (Okabe–Ito)
+palette = [
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#009E73",  # bluish green
+    "#CC79A7",  # reddish purple
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#F0E442",  # yellow (use sparingly on white)
+    "#000000",  # black
+]
+
+plt.style.use("seaborn-v0_8-whitegrid")
+fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
+
+ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
+
+for i, r in enumerate(results):
+    color = palette[i % len(palette)]
+    run = select_run(r, plot_source)
+
+    df = run.reward_frame.copy()
+    df = df.loc[df["complete_window"]].copy()
+
+    x = (24 - pd.to_numeric(df["fitbit_observed_hours"], errors="coerce").fillna(0.0)).round().clip(0, 24)
+    y = pd.to_numeric(df["latent_reward_24h"], errors="coerce") - pd.to_numeric(df["fitbit_observed_reward_24h"], errors="coerce")
+
+    plot_df = pd.DataFrame({"x": x, "y": y}).dropna()
+    plot_df["x"] = plot_df["x"].astype(int)
+
+    # points
+    ax.scatter(
+        plot_df["x"],
+        plot_df["y"],
+        color=color,
+        alpha=0.75,
+        s=40,
+        edgecolor="white",
+        linewidth=0.5,
+        label=r.participant_id,
+    )
+
+    # trend line (simple OLS y = a + b x), only if enough points
+    if len(plot_df) >= 2 and plot_df["x"].nunique() >= 2:
+        b, a = np.polyfit(plot_df["x"].to_numpy(dtype=float), plot_df["y"].to_numpy(dtype=float), deg=1)
+        xs = np.linspace(0, 24, 200)
+        ys = a + b * xs
+        ax.plot(xs, ys, color=color, linewidth=2.0, alpha=0.95)
+
+ax.set_title("Filtered reward residual vs missingness (by participant)")
+ax.set_xlabel("Missing Fitbit hours in 24-hour window")
+ax.set_ylabel("Filtered reward − observed subtotal")
+ax.set_xlim(-0.5, 24.5)
+ax.set_xticks(np.arange(0, 25, 2))
+ax.legend(frameon=False, ncol=1, fontsize=10)
+
+plt.tight_layout()
+plt.show()
+```
+
+## End test
+
 
 ```{python}
 #| warning: false
