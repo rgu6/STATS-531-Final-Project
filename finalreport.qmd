@@ -235,12 +235,9 @@ Three variations to estimate $k$ are considered and benchmarked.
 
 # Methodology and Results
 
-
-## Individual
-
-Here is what it looks like to run this model on an individual
-
+<!--
 (ADD Parameter start box for other models)
+-->
 
 ```{python}
 #| warning: false
@@ -1198,522 +1195,521 @@ participant_summary = pd.DataFrame(
 display_table(participant_summary, precision=2)
 ```
 
-### Global Search
 
-What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
 
-Design global search
 
 ```{python}
 #| warning: false
 #| message: false
 #| label: global-search
 
-def _coerce_free_params(free_params: list[str] | None, initial_params: dict[str, float]) -> list[str]:
-    if free_params is None:
-        return list(initial_params.keys())
-    return [name for name in free_params if name in initial_params]
+# can maybe delete?
+
+# def _coerce_free_params(free_params: list[str] | None, initial_params: dict[str, float]) -> list[str]:
+#     if free_params is None:
+#         return list(initial_params.keys())
+#     return [name for name in free_params if name in initial_params]
 
 
-def _coerce_start_box(
-    start_box: dict[str, tuple[float, float]] | None,
-    free_params: list[str],
-    initial_params: dict[str, float],
-) -> dict[str, tuple[float, float]]:
-    result = {}
-    start_box = start_box or {}
-    for name in free_params:
-        raw_bounds = start_box.get(name)
-        if raw_bounds is None:
-            value = float(initial_params[name])
-            width = max(abs(value) * 0.25, 0.10)
-            result[name] = (value - width, value + width)
-            continue
-        low, high = float(raw_bounds[0]), float(raw_bounds[1])
-        if high < low:
-            low, high = high, low
-        if np.isclose(low, high):
-            eps = max(abs(low) * 0.01, 1e-3)
-            low, high = low - eps, high + eps
-        result[name] = (low, high)
-    return result
+# def _coerce_start_box(
+#     start_box: dict[str, tuple[float, float]] | None,
+#     free_params: list[str],
+#     initial_params: dict[str, float],
+# ) -> dict[str, tuple[float, float]]:
+#     result = {}
+#     start_box = start_box or {}
+#     for name in free_params:
+#         raw_bounds = start_box.get(name)
+#         if raw_bounds is None:
+#             value = float(initial_params[name])
+#             width = max(abs(value) * 0.25, 0.10)
+#             result[name] = (value - width, value + width)
+#             continue
+#         low, high = float(raw_bounds[0]), float(raw_bounds[1])
+#         if high < low:
+#             low, high = high, low
+#         if np.isclose(low, high):
+#             eps = max(abs(low) * 0.01, 1e-3)
+#             low, high = low - eps, high + eps
+#         result[name] = (low, high)
+#     return result
 
 
-def _build_start_box_frame(start_box: dict[str, tuple[float, float]]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "parameter": name,
-                "start_low": bounds[0],
-                "start_high": bounds[1],
-                "start_width": bounds[1] - bounds[0],
-            }
-            for name, bounds in sorted(start_box.items())
-        ]
-    )
+# def _build_start_box_frame(start_box: dict[str, tuple[float, float]]) -> pd.DataFrame:
+#     return pd.DataFrame(
+#         [
+#             {
+#                 "parameter": name,
+#                 "start_low": bounds[0],
+#                 "start_high": bounds[1],
+#                 "start_width": bounds[1] - bounds[0],
+#             }
+#             for name, bounds in sorted(start_box.items())
+#         ]
+#     )
 
 
-def _stage_bounds(
-    base_start_box: dict[str, tuple[float, float]],
-    center_params: dict[str, float],
-    *,
-    stage_index: int,
-    box_shrink_factor_per_stage: float,
-) -> dict[str, tuple[float, float]]:
-    shrink_factor = float(np.clip(box_shrink_factor_per_stage, 1e-3, 1.0)) ** int(max(stage_index, 0))
-    result = {}
-    for name, (base_low, base_high) in base_start_box.items():
-        if shrink_factor >= 0.999999:
-            result[name] = (float(base_low), float(base_high))
-            continue
-        width = float(base_high - base_low) * shrink_factor
-        center = float(np.clip(center_params.get(name, 0.5 * (base_low + base_high)), base_low, base_high))
-        low = max(float(base_low), center - 0.5 * width)
-        high = min(float(base_high), center + 0.5 * width)
-        if np.isclose(low, high):
-            eps = max(abs(center) * 0.01, 1e-3)
-            low = max(float(base_low), center - eps)
-            high = min(float(base_high), center + eps)
-        result[name] = (float(low), float(high))
-    return result
+# def _stage_bounds(
+#     base_start_box: dict[str, tuple[float, float]],
+#     center_params: dict[str, float],
+#     *,
+#     stage_index: int,
+#     box_shrink_factor_per_stage: float,
+# ) -> dict[str, tuple[float, float]]:
+#     shrink_factor = float(np.clip(box_shrink_factor_per_stage, 1e-3, 1.0)) ** int(max(stage_index, 0))
+#     result = {}
+#     for name, (base_low, base_high) in base_start_box.items():
+#         if shrink_factor >= 0.999999:
+#             result[name] = (float(base_low), float(base_high))
+#             continue
+#         width = float(base_high - base_low) * shrink_factor
+#         center = float(np.clip(center_params.get(name, 0.5 * (base_low + base_high)), base_low, base_high))
+#         low = max(float(base_low), center - 0.5 * width)
+#         high = min(float(base_high), center + 0.5 * width)
+#         if np.isclose(low, high):
+#             eps = max(abs(center) * 0.01, 1e-3)
+#             low = max(float(base_low), center - eps)
+#             high = min(float(base_high), center + eps)
+#         result[name] = (float(low), float(high))
+#     return result
 
 
-def _sample_uniform_start(
-    template_params: dict[str, float],
-    free_params: list[str],
-    bounds: dict[str, tuple[float, float]],
-    rng: np.random.Generator,
-) -> dict[str, float]:
-    params = {name: float(value) for name, value in template_params.items()}
-    for name in free_params:
-        low, high = bounds[name]
-        params[name] = float(rng.uniform(low, high))
-    return params
+# def _sample_uniform_start(
+#     template_params: dict[str, float],
+#     free_params: list[str],
+#     bounds: dict[str, tuple[float, float]],
+#     rng: np.random.Generator,
+# ) -> dict[str, float]:
+#     params = {name: float(value) for name, value in template_params.items()}
+#     for name in free_params:
+#         low, high = bounds[name]
+#         params[name] = float(rng.uniform(low, high))
+#     return params
 
 
-def _sample_jittered_start(
-    center_params: dict[str, float],
-    template_params: dict[str, float],
-    free_params: list[str],
-    bounds: dict[str, tuple[float, float]],
-    rng: np.random.Generator,
-    *,
-    jitter_scale: float,
-) -> dict[str, float]:
-    params = {name: float(value) for name, value in template_params.items()}
-    for name in free_params:
-        base_value = float(center_params.get(name, template_params[name]))
-        low, high = bounds[name]
-        width = max(float(high - low), 1e-6)
-        jittered = base_value + rng.normal(scale=float(max(jitter_scale, 1e-6)) * width)
-        params[name] = float(np.clip(jittered, low, high))
-    return params
+# def _sample_jittered_start(
+#     center_params: dict[str, float],
+#     template_params: dict[str, float],
+#     free_params: list[str],
+#     bounds: dict[str, tuple[float, float]],
+#     rng: np.random.Generator,
+#     *,
+#     jitter_scale: float,
+# ) -> dict[str, float]:
+#     params = {name: float(value) for name, value in template_params.items()}
+#     for name in free_params:
+#         base_value = float(center_params.get(name, template_params[name]))
+#         low, high = bounds[name]
+#         width = max(float(high - low), 1e-6)
+#         jittered = base_value + rng.normal(scale=float(max(jitter_scale, 1e-6)) * width)
+#         params[name] = float(np.clip(jittered, low, high))
+#     return params
 
 
-def _build_stage_candidates(
-    *,
-    stage_index: int,
-    stage: GlobalSearchStageConfig,
-    template_params: dict[str, float],
-    free_params: list[str],
-    bounds: dict[str, tuple[float, float]],
-    previous_survivors: list[dict[str, object]],
-    include_current_theta_as_start: bool,
-    jitter_scale: float,
-    rng: np.random.Generator,
-) -> list[dict[str, object]]:
-    n_starts = int(max(stage.n_starts, 1))
-    candidates = []
+# def _build_stage_candidates(
+#     *,
+#     stage_index: int,
+#     stage: GlobalSearchStageConfig,
+#     template_params: dict[str, float],
+#     free_params: list[str],
+#     bounds: dict[str, tuple[float, float]],
+#     previous_survivors: list[dict[str, object]],
+#     include_current_theta_as_start: bool,
+#     jitter_scale: float,
+#     rng: np.random.Generator,
+# ) -> list[dict[str, object]]:
+#     n_starts = int(max(stage.n_starts, 1))
+#     candidates = []
 
-    if stage_index == 0:
-        if include_current_theta_as_start:
-            candidates.append(
-                {
-                    "origin": "current_theta",
-                    "parent_candidate_id": None,
-                    "params": {name: float(value) for name, value in template_params.items()},
-                }
-            )
-        while len(candidates) < n_starts:
-            candidates.append(
-                {
-                    "origin": "random_box",
-                    "parent_candidate_id": None,
-                    "params": _sample_uniform_start(template_params, free_params, bounds, rng),
-                }
-            )
-        return candidates
+#     if stage_index == 0:
+#         if include_current_theta_as_start:
+#             candidates.append(
+#                 {
+#                     "origin": "current_theta",
+#                     "parent_candidate_id": None,
+#                     "params": {name: float(value) for name, value in template_params.items()},
+#                 }
+#             )
+#         while len(candidates) < n_starts:
+#             candidates.append(
+#                 {
+#                     "origin": "random_box",
+#                     "parent_candidate_id": None,
+#                     "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+#                 }
+#             )
+#         return candidates
 
-    survivors = previous_survivors[:n_starts]
-    for survivor in survivors:
-        candidates.append(
-            {
-                "origin": "survivor",
-                "parent_candidate_id": survivor["candidate_id"],
-                "params": dict(survivor["fitted_params"]),
-            }
-        )
+#     survivors = previous_survivors[:n_starts]
+#     for survivor in survivors:
+#         candidates.append(
+#             {
+#                 "origin": "survivor",
+#                 "parent_candidate_id": survivor["candidate_id"],
+#                 "params": dict(survivor["fitted_params"]),
+#             }
+#         )
 
-    remaining = n_starts - len(candidates)
-    jitter_budget = min(int(max(stage.n_jittered_restarts, 0)), remaining)
-    for _ in range(jitter_budget):
-        anchor = previous_survivors[int(rng.integers(0, len(previous_survivors)))]
-        candidates.append(
-            {
-                "origin": "jittered_survivor",
-                "parent_candidate_id": anchor["candidate_id"],
-                "params": _sample_jittered_start(
-                    anchor["fitted_params"],
-                    template_params,
-                    free_params,
-                    bounds,
-                    rng,
-                    jitter_scale=jitter_scale,
-                ),
-            }
-        )
+#     remaining = n_starts - len(candidates)
+#     jitter_budget = min(int(max(stage.n_jittered_restarts, 0)), remaining)
+#     for _ in range(jitter_budget):
+#         anchor = previous_survivors[int(rng.integers(0, len(previous_survivors)))]
+#         candidates.append(
+#             {
+#                 "origin": "jittered_survivor",
+#                 "parent_candidate_id": anchor["candidate_id"],
+#                 "params": _sample_jittered_start(
+#                     anchor["fitted_params"],
+#                     template_params,
+#                     free_params,
+#                     bounds,
+#                     rng,
+#                     jitter_scale=jitter_scale,
+#                 ),
+#             }
+#         )
 
-    remaining = n_starts - len(candidates)
-    fresh_budget = min(int(max(stage.n_fresh_random_starts, 0)), remaining)
-    for _ in range(fresh_budget):
-        candidates.append(
-            {
-                "origin": "fresh_random",
-                "parent_candidate_id": None,
-                "params": _sample_uniform_start(template_params, free_params, bounds, rng),
-            }
-        )
+#     remaining = n_starts - len(candidates)
+#     fresh_budget = min(int(max(stage.n_fresh_random_starts, 0)), remaining)
+#     for _ in range(fresh_budget):
+#         candidates.append(
+#             {
+#                 "origin": "fresh_random",
+#                 "parent_candidate_id": None,
+#                 "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+#             }
+#         )
 
-    while len(candidates) < n_starts:
-        candidates.append(
-            {
-                "origin": "random_backfill",
-                "parent_candidate_id": None,
-                "params": _sample_uniform_start(template_params, free_params, bounds, rng),
-            }
-        )
+#     while len(candidates) < n_starts:
+#         candidates.append(
+#             {
+#                 "origin": "random_backfill",
+#                 "parent_candidate_id": None,
+#                 "params": _sample_uniform_start(template_params, free_params, bounds, rng),
+#             }
+#         )
 
-    return candidates
-
-
-def run_multistage_step_pomp_search(
-    data: HourlyStepModelData,
-    *,
-    initial_params: dict[str, float],
-    free_params: list[str] | None,
-    start_box: dict[str, tuple[float, float]] | None,
-    stage_configs: list[GlobalSearchStageConfig],
-    random_seed: int,
-    include_current_theta_as_start: bool = True,
-    jitter_scale: float = 0.10,
-    box_shrink_factor_per_stage: float = 1.0,
-) -> GlobalSearchResult:
-    normalized_initial = {name: float(value) for name, value in initial_params.items()}
-    normalized_free_params = _coerce_free_params(free_params, normalized_initial)
-    if not normalized_free_params:
-        raise ValueError("Select at least one parameter to estimate in the global MLE search.")
-    if not stage_configs:
-        raise ValueError("Provide at least one stage for the global search.")
-
-    normalized_start_box = _coerce_start_box(start_box, normalized_free_params, normalized_initial)
-    start_box_frame = _build_start_box_frame(normalized_start_box)
-
-    previous_survivors = []
-    current_center = dict(normalized_initial)
-    best_fit = None
-    best_candidate_row = None
-    all_rows = []
-    stage_summary_rows = []
-    total_runtime_seconds = 0.0
-    rng = np.random.default_rng(int(random_seed))
-
-    for stage_index, stage in enumerate(stage_configs):
-        stage_bounds = _stage_bounds(
-            normalized_start_box,
-            current_center,
-            stage_index=stage_index,
-            box_shrink_factor_per_stage=box_shrink_factor_per_stage,
-        )
-        stage_candidates = _build_stage_candidates(
-            stage_index=stage_index,
-            stage=stage,
-            template_params=normalized_initial,
-            free_params=normalized_free_params,
-            bounds=stage_bounds,
-            previous_survivors=previous_survivors,
-            include_current_theta_as_start=include_current_theta_as_start,
-            jitter_scale=jitter_scale,
-            rng=rng,
-        )
-
-        stage_rows = []
-        for candidate_index, candidate in enumerate(stage_candidates, start=1):
-            candidate_id = f"stage_{stage_index + 1:02d}_cand_{candidate_index:03d}"
-            fit_seed = int(random_seed) + stage_index * 10_000 + candidate_index
-            fit_start = perf_counter()
-            fitted_params = {}
-            fit_initial_params = dict(candidate["params"])
-            loglik = float("nan")
-            error_text = ""
-            fit_succeeded = False
-            fit_result = None
-
-            try:
-                fit_result = run_step_pomp_fit(
-                    data,
-                    initial_params=fit_initial_params,
-                    free_params=normalized_free_params,
-                    particles=stage.particles,
-                    mif_iterations=stage.mif_iterations,
-                    random_seed=fit_seed,
-                    cooling_fraction=stage.cooling_fraction,
-                    rw_sd_scale=stage.rw_sd_scale,
-                    evaluation_particles=stage.evaluation_particles,
-                    evaluation_pfilter_reps=stage.evaluation_pfilter_reps,
-                )
-                fit_succeeded = True
-                loglik = float(fit_result.loglik)
-                fitted_params = dict(fit_result.fitted_params)
-                fit_initial_params = dict(fit_result.initial_params)
-                if best_fit is None or (
-                    np.isfinite(loglik)
-                    and (not np.isfinite(best_fit.loglik) or loglik > float(best_fit.loglik))
-                ):
-                    best_fit = fit_result
-            except Exception as exc:
-                error_text = str(exc)
-
-            runtime_seconds = float(perf_counter() - fit_start)
-            total_runtime_seconds += runtime_seconds
-
-            row = {
-                "stage_index": stage_index + 1,
-                "stage_name": stage.name,
-                "candidate_id": candidate_id,
-                "parent_candidate_id": candidate["parent_candidate_id"],
-                "origin": str(candidate["origin"]),
-                "fit_seed": fit_seed,
-                "fit_succeeded": fit_succeeded,
-                "loglik": loglik,
-                "runtime_seconds": runtime_seconds,
-                "particles": stage.particles,
-                "mif_iterations": stage.mif_iterations,
-                "cooling_fraction": stage.cooling_fraction,
-                "rw_sd_scale": stage.rw_sd_scale,
-                "evaluation_particles": stage.evaluation_particles,
-                "evaluation_pfilter_reps": stage.evaluation_pfilter_reps,
-                "error": error_text,
-            }
-            for name in sorted(normalized_initial):
-                row[f"start_{name}"] = float(fit_initial_params.get(name, normalized_initial[name]))
-                row[f"fitted_{name}"] = float(fitted_params[name]) if name in fitted_params else np.nan
-            stage_rows.append(row)
-
-            if fit_succeeded and fit_result is not None:
-                if best_candidate_row is None or (
-                    np.isfinite(loglik)
-                    and (not np.isfinite(float(best_candidate_row.get("loglik", np.nan))) or loglik > float(best_candidate_row["loglik"]))
-                ):
-                    best_candidate_row = dict(row)
-
-        stage_frame = pd.DataFrame(stage_rows)
-        stage_frame = stage_frame.sort_values("loglik", ascending=False, na_position="last").reset_index(drop=True)
-        stage_frame["stage_rank"] = np.arange(1, len(stage_frame) + 1, dtype=int)
-
-        successful_frame = stage_frame.loc[stage_frame["fit_succeeded"]].copy()
-        keep_count = min(int(stage.keep_top), len(successful_frame))
-        kept_ids = set(successful_frame.head(keep_count)["candidate_id"].astype(str).tolist())
-        stage_frame["kept_for_next_stage"] = stage_frame["candidate_id"].astype(str).isin(kept_ids)
-        all_rows.extend(stage_frame.to_dict("records"))
-
-        previous_survivors = []
-        for survivor_row in stage_frame.loc[stage_frame["kept_for_next_stage"]].to_dict("records"):
-            previous_survivors.append(
-                {
-                    "candidate_id": str(survivor_row["candidate_id"]),
-                    "fitted_params": {
-                        name: float(survivor_row[f"fitted_{name}"])
-                        for name in normalized_initial
-                        if pd.notna(survivor_row.get(f"fitted_{name}"))
-                    },
-                }
-            )
-        if previous_survivors:
-            current_center = dict(previous_survivors[0]["fitted_params"])
-
-        stage_summary_rows.append(
-            {
-                "stage_index": stage_index + 1,
-                "stage_name": stage.name,
-                "n_starts": stage.n_starts,
-                "n_successful": int(successful_frame["fit_succeeded"].sum()) if "fit_succeeded" in successful_frame.columns else int(len(successful_frame)),
-                "keep_top": stage.keep_top,
-                "best_loglik": float(pd.to_numeric(stage_frame["loglik"], errors="coerce").max()) if stage_frame["loglik"].notna().any() else np.nan,
-                "median_loglik": float(pd.to_numeric(successful_frame["loglik"], errors="coerce").median()) if not successful_frame.empty else np.nan,
-                "runtime_seconds": float(pd.to_numeric(stage_frame["runtime_seconds"], errors="coerce").sum()),
-                "fresh_random_starts": stage.n_fresh_random_starts,
-                "jittered_restarts": stage.n_jittered_restarts,
-                "stage_best_candidate_id": str(stage_frame.iloc[0]["candidate_id"]),
-            }
-        )
-
-    if best_fit is None or best_candidate_row is None:
-        raise ValueError("No successful IF2 fits were produced in the global search.")
-
-    best_run = run_step_pomp_if2(
-        data,
-        initial_params=dict(best_fit.fitted_params),
-        free_params=[],
-        particles=int(best_candidate_row["evaluation_particles"]),
-        mif_iterations=0,
-        random_seed=int(best_candidate_row["fit_seed"]),
-        cooling_fraction=float(best_candidate_row["cooling_fraction"]),
-        rw_sd_scale=float(best_candidate_row["rw_sd_scale"]),
-        evaluation_particles=int(best_candidate_row["evaluation_particles"]),
-        evaluation_pfilter_reps=int(best_candidate_row["evaluation_pfilter_reps"]),
-    )
-
-    candidate_frame = pd.DataFrame(all_rows).sort_values(
-        ["loglik", "stage_index", "stage_rank"],
-        ascending=[False, True, True],
-        na_position="last",
-    ).reset_index(drop=True)
-    stage_summary = pd.DataFrame(stage_summary_rows).sort_values("stage_index").reset_index(drop=True)
-
-    return GlobalSearchResult(
-        best_fit=best_fit,
-        best_run=best_run,
-        candidate_frame=candidate_frame,
-        stage_summary=stage_summary,
-        start_box_frame=start_box_frame,
-        total_runtime_seconds=float(total_runtime_seconds),
-    )
+#     return candidates
 
 
-def get_cached_global_search_result(
-    data: HourlyStepModelData,
-    *,
-    participant_id: str,
-    analysis_start: pd.Timestamp,
-    analysis_end: pd.Timestamp,
-    initial_params: dict[str, float],
-    free_params: list[str] | None,
-    start_box: dict[str, tuple[float, float]] | None,
-    stage_configs: list[GlobalSearchStageConfig],
-    random_seed: int,
-    include_current_theta_as_start: bool,
-    jitter_scale: float,
-    box_shrink_factor_per_stage: float,
-) -> GlobalSearchResult:
-    stage_config_snapshot = [
-        {
-            "name": stage.name,
-            "n_starts": int(stage.n_starts),
-            "keep_top": int(stage.keep_top),
-            "particles": int(stage.particles),
-            "mif_iterations": int(stage.mif_iterations),
-            "cooling_fraction": float(stage.cooling_fraction),
-            "rw_sd_scale": float(stage.rw_sd_scale),
-            "evaluation_particles": int(stage.evaluation_particles),
-            "evaluation_pfilter_reps": int(stage.evaluation_pfilter_reps),
-            "n_fresh_random_starts": int(stage.n_fresh_random_starts),
-            "n_jittered_restarts": int(stage.n_jittered_restarts),
-        }
-        for stage in stage_configs
-    ]
-    cache_inputs = {
-        "participant_id": participant_id,
-        "analysis_start_utc_iso": analysis_start.isoformat(),
-        "analysis_end_utc_iso": analysis_end.isoformat(),
-        "model_covariate_keys": list(data.covariate_keys),
-        "initial_params": copy.deepcopy(initial_params),
-        "free_params": list(free_params or []),
-        "start_box": copy.deepcopy(start_box),
-        "stage_configs": stage_config_snapshot,
-        "random_seed": int(random_seed),
-        "include_current_theta_as_start": bool(include_current_theta_as_start),
-        "jitter_scale": float(jitter_scale),
-        "box_shrink_factor_per_stage": float(box_shrink_factor_per_stage),
-    }
-    return get_or_compute_shelve(
-        "global_step_pomp_search_result",
-        cache_inputs,
-        lambda: run_multistage_step_pomp_search(
-            data,
-            initial_params=initial_params,
-            free_params=free_params,
-            start_box=start_box,
-            stage_configs=stage_configs,
-            random_seed=random_seed,
-            include_current_theta_as_start=include_current_theta_as_start,
-            jitter_scale=jitter_scale,
-            box_shrink_factor_per_stage=box_shrink_factor_per_stage,
-        ),
-        prepare_for_store=strip_global_search_result,
-    )
+# def run_multistage_step_pomp_search(
+#     data: HourlyStepModelData,
+#     *,
+#     initial_params: dict[str, float],
+#     free_params: list[str] | None,
+#     start_box: dict[str, tuple[float, float]] | None,
+#     stage_configs: list[GlobalSearchStageConfig],
+#     random_seed: int,
+#     include_current_theta_as_start: bool = True,
+#     jitter_scale: float = 0.10,
+#     box_shrink_factor_per_stage: float = 1.0,
+# ) -> GlobalSearchResult:
+#     normalized_initial = {name: float(value) for name, value in initial_params.items()}
+#     normalized_free_params = _coerce_free_params(free_params, normalized_initial)
+#     if not normalized_free_params:
+#         raise ValueError("Select at least one parameter to estimate in the global MLE search.")
+#     if not stage_configs:
+#         raise ValueError("Provide at least one stage for the global search.")
+
+#     normalized_start_box = _coerce_start_box(start_box, normalized_free_params, normalized_initial)
+#     start_box_frame = _build_start_box_frame(normalized_start_box)
+
+#     previous_survivors = []
+#     current_center = dict(normalized_initial)
+#     best_fit = None
+#     best_candidate_row = None
+#     all_rows = []
+#     stage_summary_rows = []
+#     total_runtime_seconds = 0.0
+#     rng = np.random.default_rng(int(random_seed))
+
+#     for stage_index, stage in enumerate(stage_configs):
+#         stage_bounds = _stage_bounds(
+#             normalized_start_box,
+#             current_center,
+#             stage_index=stage_index,
+#             box_shrink_factor_per_stage=box_shrink_factor_per_stage,
+#         )
+#         stage_candidates = _build_stage_candidates(
+#             stage_index=stage_index,
+#             stage=stage,
+#             template_params=normalized_initial,
+#             free_params=normalized_free_params,
+#             bounds=stage_bounds,
+#             previous_survivors=previous_survivors,
+#             include_current_theta_as_start=include_current_theta_as_start,
+#             jitter_scale=jitter_scale,
+#             rng=rng,
+#         )
+
+#         stage_rows = []
+#         for candidate_index, candidate in enumerate(stage_candidates, start=1):
+#             candidate_id = f"stage_{stage_index + 1:02d}_cand_{candidate_index:03d}"
+#             fit_seed = int(random_seed) + stage_index * 10_000 + candidate_index
+#             fit_start = perf_counter()
+#             fitted_params = {}
+#             fit_initial_params = dict(candidate["params"])
+#             loglik = float("nan")
+#             error_text = ""
+#             fit_succeeded = False
+#             fit_result = None
+
+#             try:
+#                 fit_result = run_step_pomp_fit(
+#                     data,
+#                     initial_params=fit_initial_params,
+#                     free_params=normalized_free_params,
+#                     particles=stage.particles,
+#                     mif_iterations=stage.mif_iterations,
+#                     random_seed=fit_seed,
+#                     cooling_fraction=stage.cooling_fraction,
+#                     rw_sd_scale=stage.rw_sd_scale,
+#                     evaluation_particles=stage.evaluation_particles,
+#                     evaluation_pfilter_reps=stage.evaluation_pfilter_reps,
+#                 )
+#                 fit_succeeded = True
+#                 loglik = float(fit_result.loglik)
+#                 fitted_params = dict(fit_result.fitted_params)
+#                 fit_initial_params = dict(fit_result.initial_params)
+#                 if best_fit is None or (
+#                     np.isfinite(loglik)
+#                     and (not np.isfinite(best_fit.loglik) or loglik > float(best_fit.loglik))
+#                 ):
+#                     best_fit = fit_result
+#             except Exception as exc:
+#                 error_text = str(exc)
+
+#             runtime_seconds = float(perf_counter() - fit_start)
+#             total_runtime_seconds += runtime_seconds
+
+#             row = {
+#                 "stage_index": stage_index + 1,
+#                 "stage_name": stage.name,
+#                 "candidate_id": candidate_id,
+#                 "parent_candidate_id": candidate["parent_candidate_id"],
+#                 "origin": str(candidate["origin"]),
+#                 "fit_seed": fit_seed,
+#                 "fit_succeeded": fit_succeeded,
+#                 "loglik": loglik,
+#                 "runtime_seconds": runtime_seconds,
+#                 "particles": stage.particles,
+#                 "mif_iterations": stage.mif_iterations,
+#                 "cooling_fraction": stage.cooling_fraction,
+#                 "rw_sd_scale": stage.rw_sd_scale,
+#                 "evaluation_particles": stage.evaluation_particles,
+#                 "evaluation_pfilter_reps": stage.evaluation_pfilter_reps,
+#                 "error": error_text,
+#             }
+#             for name in sorted(normalized_initial):
+#                 row[f"start_{name}"] = float(fit_initial_params.get(name, normalized_initial[name]))
+#                 row[f"fitted_{name}"] = float(fitted_params[name]) if name in fitted_params else np.nan
+#             stage_rows.append(row)
+
+#             if fit_succeeded and fit_result is not None:
+#                 if best_candidate_row is None or (
+#                     np.isfinite(loglik)
+#                     and (not np.isfinite(float(best_candidate_row.get("loglik", np.nan))) or loglik > float(best_candidate_row["loglik"]))
+#                 ):
+#                     best_candidate_row = dict(row)
+
+#         stage_frame = pd.DataFrame(stage_rows)
+#         stage_frame = stage_frame.sort_values("loglik", ascending=False, na_position="last").reset_index(drop=True)
+#         stage_frame["stage_rank"] = np.arange(1, len(stage_frame) + 1, dtype=int)
+
+#         successful_frame = stage_frame.loc[stage_frame["fit_succeeded"]].copy()
+#         keep_count = min(int(stage.keep_top), len(successful_frame))
+#         kept_ids = set(successful_frame.head(keep_count)["candidate_id"].astype(str).tolist())
+#         stage_frame["kept_for_next_stage"] = stage_frame["candidate_id"].astype(str).isin(kept_ids)
+#         all_rows.extend(stage_frame.to_dict("records"))
+
+#         previous_survivors = []
+#         for survivor_row in stage_frame.loc[stage_frame["kept_for_next_stage"]].to_dict("records"):
+#             previous_survivors.append(
+#                 {
+#                     "candidate_id": str(survivor_row["candidate_id"]),
+#                     "fitted_params": {
+#                         name: float(survivor_row[f"fitted_{name}"])
+#                         for name in normalized_initial
+#                         if pd.notna(survivor_row.get(f"fitted_{name}"))
+#                     },
+#                 }
+#             )
+#         if previous_survivors:
+#             current_center = dict(previous_survivors[0]["fitted_params"])
+
+#         stage_summary_rows.append(
+#             {
+#                 "stage_index": stage_index + 1,
+#                 "stage_name": stage.name,
+#                 "n_starts": stage.n_starts,
+#                 "n_successful": int(successful_frame["fit_succeeded"].sum()) if "fit_succeeded" in successful_frame.columns else int(len(successful_frame)),
+#                 "keep_top": stage.keep_top,
+#                 "best_loglik": float(pd.to_numeric(stage_frame["loglik"], errors="coerce").max()) if stage_frame["loglik"].notna().any() else np.nan,
+#                 "median_loglik": float(pd.to_numeric(successful_frame["loglik"], errors="coerce").median()) if not successful_frame.empty else np.nan,
+#                 "runtime_seconds": float(pd.to_numeric(stage_frame["runtime_seconds"], errors="coerce").sum()),
+#                 "fresh_random_starts": stage.n_fresh_random_starts,
+#                 "jittered_restarts": stage.n_jittered_restarts,
+#                 "stage_best_candidate_id": str(stage_frame.iloc[0]["candidate_id"]),
+#             }
+#         )
+
+#     if best_fit is None or best_candidate_row is None:
+#         raise ValueError("No successful IF2 fits were produced in the global search.")
+
+#     best_run = run_step_pomp_if2(
+#         data,
+#         initial_params=dict(best_fit.fitted_params),
+#         free_params=[],
+#         particles=int(best_candidate_row["evaluation_particles"]),
+#         mif_iterations=0,
+#         random_seed=int(best_candidate_row["fit_seed"]),
+#         cooling_fraction=float(best_candidate_row["cooling_fraction"]),
+#         rw_sd_scale=float(best_candidate_row["rw_sd_scale"]),
+#         evaluation_particles=int(best_candidate_row["evaluation_particles"]),
+#         evaluation_pfilter_reps=int(best_candidate_row["evaluation_pfilter_reps"]),
+#     )
+
+#     candidate_frame = pd.DataFrame(all_rows).sort_values(
+#         ["loglik", "stage_index", "stage_rank"],
+#         ascending=[False, True, True],
+#         na_position="last",
+#     ).reset_index(drop=True)
+#     stage_summary = pd.DataFrame(stage_summary_rows).sort_values("stage_index").reset_index(drop=True)
+
+#     return GlobalSearchResult(
+#         best_fit=best_fit,
+#         best_run=best_run,
+#         candidate_frame=candidate_frame,
+#         stage_summary=stage_summary,
+#         start_box_frame=start_box_frame,
+#         total_runtime_seconds=float(total_runtime_seconds),
+#     )
 
 
-global_search_stage_configs = [
-    GlobalSearchStageConfig(**stage_dict)
-    for stage_dict in global_search_stage_controls
-]
+# def get_cached_global_search_result(
+#     data: HourlyStepModelData,
+#     *,
+#     participant_id: str,
+#     analysis_start: pd.Timestamp,
+#     analysis_end: pd.Timestamp,
+#     initial_params: dict[str, float],
+#     free_params: list[str] | None,
+#     start_box: dict[str, tuple[float, float]] | None,
+#     stage_configs: list[GlobalSearchStageConfig],
+#     random_seed: int,
+#     include_current_theta_as_start: bool,
+#     jitter_scale: float,
+#     box_shrink_factor_per_stage: float,
+# ) -> GlobalSearchResult:
+#     stage_config_snapshot = [
+#         {
+#             "name": stage.name,
+#             "n_starts": int(stage.n_starts),
+#             "keep_top": int(stage.keep_top),
+#             "particles": int(stage.particles),
+#             "mif_iterations": int(stage.mif_iterations),
+#             "cooling_fraction": float(stage.cooling_fraction),
+#             "rw_sd_scale": float(stage.rw_sd_scale),
+#             "evaluation_particles": int(stage.evaluation_particles),
+#             "evaluation_pfilter_reps": int(stage.evaluation_pfilter_reps),
+#             "n_fresh_random_starts": int(stage.n_fresh_random_starts),
+#             "n_jittered_restarts": int(stage.n_jittered_restarts),
+#         }
+#         for stage in stage_configs
+#     ]
+#     cache_inputs = {
+#         "participant_id": participant_id,
+#         "analysis_start_utc_iso": analysis_start.isoformat(),
+#         "analysis_end_utc_iso": analysis_end.isoformat(),
+#         "model_covariate_keys": list(data.covariate_keys),
+#         "initial_params": copy.deepcopy(initial_params),
+#         "free_params": list(free_params or []),
+#         "start_box": copy.deepcopy(start_box),
+#         "stage_configs": stage_config_snapshot,
+#         "random_seed": int(random_seed),
+#         "include_current_theta_as_start": bool(include_current_theta_as_start),
+#         "jitter_scale": float(jitter_scale),
+#         "box_shrink_factor_per_stage": float(box_shrink_factor_per_stage),
+#     }
+#     return get_or_compute_shelve(
+#         "global_step_pomp_search_result",
+#         cache_inputs,
+#         lambda: run_multistage_step_pomp_search(
+#             data,
+#             initial_params=initial_params,
+#             free_params=free_params,
+#             start_box=start_box,
+#             stage_configs=stage_configs,
+#             random_seed=random_seed,
+#             include_current_theta_as_start=include_current_theta_as_start,
+#             jitter_scale=jitter_scale,
+#             box_shrink_factor_per_stage=box_shrink_factor_per_stage,
+#         ),
+#         prepare_for_store=strip_global_search_result,
+#     )
 
-global_search_result = get_cached_global_search_result(
-    hourly_data,
-    participant_id=participant_id,
-    analysis_start=analysis_start,
-    analysis_end=analysis_end,
-    initial_params=initial_params,
-    free_params=active_free_params,
-    start_box=global_search_start_box,
-    stage_configs=global_search_stage_configs,
-    random_seed=global_search_controls["random_seed"],
-    include_current_theta_as_start=global_search_controls["include_current_theta_as_start"],
-    jitter_scale=global_search_controls["jitter_scale"],
-    box_shrink_factor_per_stage=global_search_controls["box_shrink_factor_per_stage"],
-)
 
-global_best_fit = global_search_result.best_fit
-global_best_run = global_search_result.best_run
+# global_search_stage_configs = [
+#     GlobalSearchStageConfig(**stage_dict)
+#     for stage_dict in global_search_stage_controls
+# ]
 
-global_best_summary = pd.DataFrame(
-    [
-        {
-            "Search": "Global MLE",
-            "Participant ID": participant_id,
-            "LogLik": global_best_run.loglik,
-            **global_best_fit.fitted_params,
-        }
-    ]
-).round(3)
+# global_search_result = get_cached_global_search_result(
+#     hourly_data,
+#     participant_id=participant_id,
+#     analysis_start=analysis_start,
+#     analysis_end=analysis_end,
+#     initial_params=initial_params,
+#     free_params=active_free_params,
+#     start_box=global_search_start_box,
+#     stage_configs=global_search_stage_configs,
+#     random_seed=global_search_controls["random_seed"],
+#     include_current_theta_as_start=global_search_controls["include_current_theta_as_start"],
+#     jitter_scale=global_search_controls["jitter_scale"],
+#     box_shrink_factor_per_stage=global_search_controls["box_shrink_factor_per_stage"],
+# )
 
-global_stage_summary = (
-    global_search_result.stage_summary[
-        [
-            "stage_name",
-            "n_starts",
-            "n_successful",
-            "keep_top",
-            "best_loglik",
-            "runtime_seconds",
-        ]
-    ]
-    .rename(
-        columns={
-            "stage_name": "Stage",
-            "n_starts": "Starts",
-            "n_successful": "Successful fits",
-            "keep_top": "Keep top",
-            "best_loglik": "Best logLik",
-            "runtime_seconds": "Runtime (s)",
-        }
-    )
-    .round(3)
-)
-global_stage_summary.insert(0, "Search", "Global")
+# global_best_fit = global_search_result.best_fit
+# global_best_run = global_search_result.best_run
 
-display_table(global_best_summary, precision=3)
-display_table(global_stage_summary, precision=3)
+# global_best_summary = pd.DataFrame(
+#     [
+#         {
+#             "Search": "Global MLE",
+#             "Participant ID": participant_id,
+#             "LogLik": global_best_run.loglik,
+#             **global_best_fit.fitted_params,
+#         }
+#     ]
+# ).round(3)
+
+# global_stage_summary = (
+#     global_search_result.stage_summary[
+#         [
+#             "stage_name",
+#             "n_starts",
+#             "n_successful",
+#             "keep_top",
+#             "best_loglik",
+#             "runtime_seconds",
+#         ]
+#     ]
+#     .rename(
+#         columns={
+#             "stage_name": "Stage",
+#             "n_starts": "Starts",
+#             "n_successful": "Successful fits",
+#             "keep_top": "Keep top",
+#             "best_loglik": "Best logLik",
+#             "runtime_seconds": "Runtime (s)",
+#         }
+#     )
+#     .round(3)
+# )
+# global_stage_summary.insert(0, "Search", "Global")
+
+# display_table(global_best_summary, precision=3)
+# display_table(global_stage_summary, precision=3)
 ```
 
 ```{python}
@@ -1723,33 +1719,26 @@ display_table(global_stage_summary, precision=3)
 
 # Compare the starting values with the available fitted results. The local-fit
 # column is included only when that chunk has been run in this document.
-local_fit_result = globals().get("local_step_pomp_result")
-coefficient_rows = []
-for param_name in initial_params:
-    global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
-    row = {
-        "Parameter": param_name,
-        "Initial value": initial_params[param_name],
-        "Global MLE value": global_value,
-    }
-    if local_fit_result is not None:
-        row["Local MLE value"] = local_fit_result.fitted_params.get(
-            param_name,
-            initial_params[param_name],
-        )
-    coefficient_rows.append(row)
+# local_fit_result = globals().get("local_step_pomp_result")
+# coefficient_rows = []
+# for param_name in initial_params:
+#     global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
+#     row = {
+#         "Parameter": param_name,
+#         "Initial value": initial_params[param_name],
+#         "Global MLE value": global_value,
+#     }
+#     if local_fit_result is not None:
+#         row["Local MLE value"] = local_fit_result.fitted_params.get(
+#             param_name,
+#             initial_params[param_name],
+#         )
+#     coefficient_rows.append(row)
 
-coefficient_table = pd.DataFrame(coefficient_rows).round(3)
-display_table(coefficient_table, precision=3)
+# coefficient_table = pd.DataFrame(coefficient_rows).round(3)
+#display_table(coefficient_table, precision=3)
 ```
 
-### Diagnostics
-
-Here we plot an estimate of the reconstructed latent reward, alongside the observed reward.
-
-(How much masking causes how much RMSE? If there's room/time) 
-
-## Test hw8 script
 
 ```{python}
 # | echo: false
@@ -1810,6 +1799,10 @@ for pid in participant_ids:
     results.append(hw8.run_participant(pid, cache_cfg=cache_cfg, cfg=analysis_cfg))
 ```
 
+### Global Search
+
+What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
+
 ```{python}
 # | echo: false
 # | label: display-tables
@@ -1824,12 +1817,17 @@ global_best_all = pd.concat([r.global_best_summary for r in results], ignore_ind
 coef_all = pd.concat([r.coefficient_table for r in results], ignore_index=True).round(3)
 stage_all = pd.concat([r.global_stage_summary for r in results], ignore_index=True).round(3)
 
-display_table(local_mle_all, precision=3)
+#display_table(local_mle_all, precision=3)
 display_table(global_best_all, precision=3)
 display_table(stage_all, precision=3)
 display_table(coef_all, precision=3)
 ```
 
+### Diagnostics
+
+Here we plot an estimate of the reconstructed latent reward, alongside the observed reward.
+
+(How much masking causes how much RMSE? If there's room/time) 
 ```{python}
 # | echo: false
 # | label: reward-plot
@@ -1869,34 +1867,6 @@ plt.tight_layout()
 plt.show()
 
 ```
-
-```{python}
-plot_source = residual_plot_fit_source
-n = len(results)
-fig, axes = plt.subplots(nrows=1, ncols=n, figsize=(residual_plot_fig_width * n, residual_plot_fig_height), sharey=True)
-
-if n == 1:
-    axes = [axes]
-
-for ax, r in zip(axes, results):
-    run = select_run(r, plot_source)
-    df = run.reward_frame.copy()
-    df = df.loc[df["complete_window"]].copy()
-    df["missing_fitbit_hours"] = (24 - pd.to_numeric(df["fitbit_observed_hours"], errors="coerce").fillna(0.0)).round().clip(0, 24).astype(int)
-    df["reward_residual"] = pd.to_numeric(df["latent_reward_24h"], errors="coerce") - pd.to_numeric(df["fitbit_observed_reward_24h"], errors="coerce")
-
-    ax.scatter(df["missing_fitbit_hours"], df["reward_residual"], color="#d69e2e", edgecolor="#8c6d1f", alpha=0.8, s=40)
-    ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
-    ax.set_title(r.participant_id)
-    ax.set_xlabel("Missing hours")
-    ax.set_xlim(-0.5, 24.5)
-    ax.set_xticks(np.arange(0, 25, 4))
-
-axes[0].set_ylabel("Filtered reward − observed subtotal")
-plt.tight_layout()
-plt.show()
-```
-
 
 ```{python}
 # Residuals: all participants on one plot + per-participant trend line
@@ -1962,124 +1932,10 @@ plt.tight_layout()
 plt.show()
 ```
 
-## End test
-
-
-```{python}
-#| warning: false
-#| message: false
-#| echo: false
-#| label: filtered-reward-plot
-
-# Plot the filtered 24-hour reward reconstruction after the local 3pm decision
-# time. If the local-fit chunk is absent, the "local" selector falls back to
-# the global-best fit.
-def select_plot_result(plot_source: str) -> tuple[StepPompRunResult, str]:
-    normalized_source = str(plot_source).strip().lower()
-    local_fit_result = globals().get("local_step_pomp_result")
-    if normalized_source == "local" and local_fit_result is not None:
-        return local_fit_result, "local fit"
-    return global_best_run, "global-best fit"
-
-
-plot_result, plot_label = select_plot_result(reward_plot_fit_source)
-
-reward_plot = plot_result.reward_frame.copy()
-reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
-reward_plot["decision_date"] = pd.to_datetime(
-    reward_plot["decision_local_time"],
-    errors="coerce",
-).dt.tz_localize(None)
-
-plt.style.use("seaborn-v0_8-whitegrid")
-fig, ax = plt.subplots(figsize=(reward_plot_fig_width, reward_plot_fig_height))
-
-ax.bar(
-    reward_plot["decision_date"],
-    reward_plot["latent_reward_24h"],
-    color="#d69e2e",
-    alpha=0.75,
-    width=0.8,
-    label="Filtered latent reward",
-)
-ax.plot(
-    reward_plot["decision_date"],
-    reward_plot["fitbit_observed_reward_24h"],
-    color="#2b6cb0",
-    linewidth=1.8,
-    marker="o",
-    markersize=3,
-    label="Observed Fitbit subtotal",
-)
-
-ax.set_title(
-    f"Reconstructed 24-hour filtered reward for {participant_id} ({plot_label})",
-    fontsize=reward_plot_title_fontsize,
-)
-ax.set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
-ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
-ax.legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
-ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
-plt.xticks(rotation=45, ha="right")
-
-plt.tight_layout()
-plt.show()
-```
-
 
 Notice that the latent always upper bounds the observed reward, which makes sense because many of the individual buckets are empty. To demonstrate this, we plot below missingness vs reward residual for several participants:
-```{python}
-#| warning: false
-#| message: false
-#| echo: false
-#| label: residual-plot
-
-# Plot residual = filtered latent reward - observed Fitbit subtotal against the
-# number of missing Fitbit hours in the 24-hour reward window.
-plot_result, _ = select_plot_result(residual_plot_fit_source)
-residual_plot = plot_result.reward_frame.copy()
-residual_plot = residual_plot.loc[residual_plot["complete_window"]].copy()
-residual_plot["missing_fitbit_hours"] = (
-    24
-    - pd.to_numeric(
-        residual_plot["fitbit_observed_hours"],
-        errors="coerce",
-    ).fillna(0.0)
-).round().clip(lower=0, upper=24).astype(int)
-residual_plot["reward_residual"] = (
-    pd.to_numeric(residual_plot["latent_reward_24h"], errors="coerce")
-    - pd.to_numeric(residual_plot["fitbit_observed_reward_24h"], errors="coerce")
-)
-
-plt.style.use("seaborn-v0_8-whitegrid")
-fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
-
-ax.scatter(
-    residual_plot["missing_fitbit_hours"],
-    residual_plot["reward_residual"],
-    color="#d69e2e",
-    edgecolor="#8c6d1f",
-    alpha=0.8,
-    s=40,
-)
-ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
-
-ax.set_title(f"Filtered reward residual vs missingness for {participant_id}")
-ax.set_xlabel("Missing Fitbit hours in 24-hour window")
-ax.set_ylabel("Filtered reward - observed subtotal")
-ax.set_xlim(-0.5, 24.5)
-ax.set_xticks(np.arange(0, 25, 1))
-
-plt.tight_layout()
-plt.show()
-```
-
-
-(Do three of these plots. One for user with lowest missingness, highest missingness, and median missingness. Color each user's points different. Plot a trendline for each.)
 
 Notice that the estimated latent reward always upper bounds the observed reward. This is because it's a sum of hourly buckets, for which many of the observations are missing. The second plot (maybe include a trend line?) shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is the point of using a latent model to begin-with, we expect that there are many steps the participant is taking that aren't being picked up. However, this introduces great challenges in benchmarking (elaborate on challenges?).
-
-Maybe do for three participants? Low medium high missingness.
 
 ### Benchmarks
 
@@ -2089,6 +1945,53 @@ Because the end-goal is prediction, not inference, we aim for the model that pre
 
 For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
 
+Benchmark Draft:
+
+There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations.
+
+First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero, making error calculations misleading in those cases.
+
+Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal.
+
+Using hourly observations with nonzero Fitbit step counts, we compute error at the daily level to align with the research goal of predicting 24-hour rewards. First, define
+
+$$
+\mathcal{H}_d = \{ t \in d : \text{hour } t \text{ was artificially masked and } y_t \text{ is observed} \}.
+$$
+
+Let $m_d = |\mathcal{H}_d|$ represent the 20\% of available data that was masked, but originally had nonzero step counts.
+
+Next, define the true observed subtotal for this 20\% as
+
+$$
+S_d = \sum_{t \in \mathcal{H}_d} y_t,
+$$
+
+and the corresponding predicted subtotal as
+
+$$
+\hat{S}_d = \sum_{t \in \mathcal{H}_d} \hat{y}_t.
+$$
+
+The subtotal error is defined as
+
+$$
+E_d = \hat{S}_d - S_d = \sum_{t \in \mathcal{H}_d} (\hat{y}_t - y_t).
+$$
+
+It is important to normalize the subtotal error, as the analysis above shows that error increases with missingness. The normalized subtotal error is
+
+$$
+Z_d = \frac{E_d}{\sqrt{m_d}}.
+$$
+
+Finally, the benchmark is defined as
+
+$$
+\mathrm{RMSE}_{\text{subtotal}/\sqrt{m}} = \sqrt{\frac{1}{D} \sum_{d=1}^{D} Z_d^2},
+$$
+
+where $d$ indexes the 24-hour decision window.
 
 ## Aggregate modeling
 
