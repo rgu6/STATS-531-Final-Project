@@ -221,7 +221,7 @@ where $H(d)$ denotes the 24 hourly buckets following 3pm local time. Because the
 
 All 78 participants are jointly fit to personalized models in a "panel". We compare three variations of the model all sharing the AR(1) latent that differ in their measurement distribution, in how the observation-dispersion $k$ is handled: participant-specific $k$ with no pooling, a lobally shared $k$, and a partially pooled $k$. We refer to these as ar1personal, ar1global, and ar1partial respectively. Among the parameters $(\phi, sigma, k)$, $k$ was the most natural candidate for pooling because it governs the measurement dynamics of the Fitbit, which all participants are using.
 
-In the no-pooling model, each participant has their own $\phi_i$, 
+In the no-pooling model, each participant has their own $\phi_i$, $\sigma_i$, and $k_i$. Here, the panel main serves as a convenient interface to fit many participant-specific, independent time
 
 ith no pooling, global pooling, and partial pooling (we name these models ar1personal, ar1global, and ar1partial respectively). Because $k$ is a dispersion parameter in the measurement model of the Fitbit, of the three parameters, it was the most likely candidate for information to be pooled between participants.
 

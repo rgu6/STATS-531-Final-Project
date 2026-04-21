@@ -3688,112 +3688,6 @@ aggregate_settings_table = pd.DataFrame(
 
 ```{python}
 #| echo: false
-#| label: aggregate-settings-table
-
-if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmarks_only", "plots_only"}:
-    aggregate_settings_display = make_key_value_table(
-        {
-            "RL": aggregate_config["RL"],
-            "Device": aggregate_config["device"],
-            "Participant set": aggregate_config["participant_set"],
-            "Panel batch size": aggregate_config["panel_chunk_size"],
-            "Model set": aggregate_config["model_set"],
-            "Displayed model": aggregate_config["model_family"],
-            "Pooling": ", ".join(map(str, aggregate_config["active_pooling_modes"])),
-            "Covariates": aggregate_config["covariate_mode"],
-            "Mask regime": aggregate_config["mask_regime"],
-            "Missing fraction": aggregate_config["missing_fraction"],
-            "Mask replicates": aggregate_config["n_mask_replicates"],
-            "Stage 1 starts": aggregate_config["stage1_starts"],
-            "Stage 2 starts": aggregate_config["stage2_starts"],
-            "Stage 1 keep top": aggregate_config["stage1_keep_top"],
-            "Stage 2 keep top": aggregate_config["stage2_keep_top"],
-            "Stage 1 IF2 iterations": aggregate_config["stage1_if2_iterations"],
-            "Stage 2 IF2 iterations": aggregate_config["stage2_if2_iterations"],
-            "Stage 1 particles": aggregate_config["stage1_particles"],
-            "Stage 2 particles": aggregate_config["stage2_particles"],
-            "Stage 1 eval particles": aggregate_config["stage1_eval_particles"],
-            "Stage 2 eval particles": aggregate_config["stage2_eval_particles"],
-            "Stage 1 eval reps": aggregate_config["stage1_eval_reps"],
-            "Stage 2 eval reps": aggregate_config["stage2_eval_reps"],
-            "Stage 1 cooling": aggregate_config["stage1_cooling_fraction"],
-            "Stage 2 cooling": aggregate_config["stage2_cooling_fraction"],
-            "Stage 1 RW SD": aggregate_config["stage1_rw_sd_scale"],
-            "Stage 2 RW SD": aggregate_config["stage2_rw_sd_scale"],
-            "Stage 1 fresh starts": aggregate_config["stage1_fresh_random_starts"],
-            "Stage 2 fresh starts": aggregate_config["stage2_fresh_random_starts"],
-            "Stage 1 jittered": aggregate_config["stage1_jittered_restarts"],
-            "Stage 2 jittered": aggregate_config["stage2_jittered_restarts"],
-        }
-    )
-    display_table(aggregate_settings_display, precision=3)
-```
-
-```{python}
-#| echo: false
-#| label: aggregate-search-windows
-
-if str(aggregate_config["section_scope"]) in {"all", "aggregate_only", "benchmarks_only", "plots_only"}:
-    search_window_display = (
-        pd.DataFrame(
-            [
-                {
-                    "Parameter": str(parameter_name),
-                    "Low": float(bounds[0]),
-                    "High": float(bounds[1]),
-                }
-                for parameter_name, bounds in aggregate_config["search_windows"].items()
-            ]
-        )
-        .sort_values("Parameter")
-        .reset_index(drop=True)
-    )
-    display_table(search_window_display, precision=3)
-```
-
-```{python}
-#| echo: false
-#| label: aggregate-cohort-summary
-
-cohort_summary_display = make_key_value_table(
-    {
-        "Full-set participants": len(aggregate_base_artifact.get("full_set_ids", [])),
-        "Small-set participants": len(aggregate_base_artifact.get("small_set_ids", [])),
-        "Selected participants": len(aggregate_derived_artifact.get("participant_ids", [])),
-        "Missingness-definition mismatches": int(len(aggregate_base_artifact.get("cohort_mismatch", pd.DataFrame()))),
-    }
-)
-display_table(cohort_summary_display, precision=2)
-```
-
-```{python}
-#| echo: false
-#| label: aggregate-model-comparison
-
-if aggregate_model_comparison.empty:
-    print("No aggregate benchmark summaries are available for the current fit_scope / section_scope configuration.")
-else:
-    comparison_display = aggregate_model_comparison.copy()
-    sort_columns = [
-        column
-        for column in ["benchmark_label", "heldout_subtotal_rmse_sqrtm", "hourly_masked_rmse", "model_family", "pooling_mode"]
-        if column in comparison_display.columns
-    ]
-    if sort_columns:
-        comparison_display = comparison_display.sort_values(
-            sort_columns,
-            ascending=[True] * len(sort_columns),
-            na_position="last",
-        ).reset_index(drop=True)
-    else:
-        comparison_display = comparison_display.reset_index(drop=True)
-    for table_title, table_frame in build_model_comparison_tables(comparison_display):
-        print(table_title)
-        display_table(table_frame, precision=3)
-```
-
-```{python}
-#| echo: false
 #| label: aggregate-model-metric-summary
 
 if aggregate_model_metric_summary.empty:
@@ -3818,8 +3712,6 @@ else:
                     "model_family",
                     "pooling_mode",
                     "mean_panel_unit_loglik",
-                    "hourly_rmse",
-                    "reward_rmse",
                     "daily_rmse_sqrtm",
                 ]
                 if column in aggregate_model_metric_summary.columns
@@ -3830,9 +3722,7 @@ else:
                 "model_family": "model",
                 "pooling_mode": "pooling",
                 "mean_panel_unit_loglik": "avg logLik",
-                "hourly_rmse": "hr RMSE",
-                "reward_rmse": "reward RMSE",
-                "daily_rmse_sqrtm": "daily RMSE/sqrt(m)",
+                "daily_rmse_sqrtm": "RMSE Subtotal",
             }
         )
         .sort_values(["model", "pooling"], na_position="last")
@@ -3867,11 +3757,7 @@ else:
                     "model_family",
                     "pooling_mode",
                     "hourly_correlation_mean",
-                    "hourly_correlation_min",
-                    "hourly_correlation_max",
                     "daily_correlation_mean",
-                    "daily_correlation_min",
-                    "daily_correlation_max",
                 ]
                 if column in aggregate_correlation_summary.columns
             ],
@@ -3881,11 +3767,7 @@ else:
                 "model_family": "model",
                 "pooling_mode": "pooling",
                 "hourly_correlation_mean": "avg hr corr",
-                "hourly_correlation_min": "min hr corr",
-                "hourly_correlation_max": "max hr corr",
                 "daily_correlation_mean": "avg day corr",
-                "daily_correlation_min": "min day corr",
-                "daily_correlation_max": "max day corr",
             }
         )
         .sort_values(["model", "pooling"], na_position="last")
