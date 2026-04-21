@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import pickle
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
@@ -99,7 +100,18 @@ def _json_default(value: object) -> object:
 
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default), encoding="utf-8")
+    serialized = json.dumps(payload, indent=2, sort_keys=True, default=_json_default)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+    ) as handle:
+        handle.write(serialized)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
 
 
 def _append_jsonl(path: Path, payload: object) -> None:
@@ -111,8 +123,16 @@ def _append_jsonl(path: Path, payload: object) -> None:
 
 def _write_pickle(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        delete=False,
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+    ) as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
 
 
 def _read_pickle(path: Path) -> object:
@@ -1259,6 +1279,12 @@ def _load_artifact(root: Path, artifact_type: str, identity: str) -> object:
     return _read_pickle(paths["pickle"])
 
 
+def _artifact_ready(paths: dict[str, Path], force_recompute: bool) -> bool:
+    if force_recompute:
+        return False
+    return paths["pickle"].exists() and paths["meta"].exists()
+
+
 def _active_benchmark_specs(resolved_config: dict[str, object]) -> list[BenchmarkSpec]:
     raw = resolved_config.get("benchmark_keys")
     if raw is None:
@@ -1327,7 +1353,7 @@ def ensure_base_artifact(
     }
     identity = _sha_identity(base_identity_payload)
     paths = _artifact_paths(cache_root, "base", identity)
-    if _cache_hit(paths["pickle"], force_recompute):
+    if _artifact_ready(paths, force_recompute):
         return _load_artifact(cache_root, "base", identity), base_identity_payload, identity
 
     start_utc = pd.Timestamp(resolved_config["analysis_start_utc_iso"]).tz_convert("UTC")
@@ -1493,13 +1519,23 @@ def run_cache_first_pipeline(
     def _write_progress_manifest() -> None:
         pd.DataFrame(task_rows).to_csv(progress_manifest_path, index=False)
 
+    def _progress_counts() -> tuple[int, int, int]:
+        total = len(task_rows)
+        done = sum(1 for row in task_rows if str(row.get("status")) in {"done", "cached"})
+        running = sum(1 for row in task_rows if str(row.get("status")) == "running")
+        return done, running, total
+
     def emit_progress(message: str, **extra: object) -> None:
-        progress_callback(message)
+        done, running, total = _progress_counts()
+        progress_callback(f"[{done}/{total} done, {running} running] {message}")
         _append_jsonl(
             progress_log_path,
             {
                 "timestamp_utc": pd.Timestamp.utcnow().isoformat(),
                 "message": str(message),
+                "progress_done": done,
+                "progress_running": running,
+                "progress_total": total,
                 **extra,
             },
         )
@@ -1549,7 +1585,7 @@ def run_cache_first_pipeline(
                 }
             )
             paths = _artifact_paths(cache_paths["root"], "masks", identity)
-            if _cache_hit(paths["pickle"], force_recompute):
+            if _artifact_ready(paths, force_recompute):
                 mask_payload = _load_artifact(cache_paths["root"], "masks", identity)
             else:
                 emit_progress(f"Building mask artifact {mask_id}", task_type="mask", mask_id=mask_id)
@@ -1618,7 +1654,7 @@ def run_cache_first_pipeline(
                 )
                 paths = _artifact_paths(cache_paths["root"], "fits/unmasked", identity)
                 unmasked_task_id = f"unmasked::{model_family}::{pooling_mode}"
-                if _cache_hit(paths["pickle"], force_recompute):
+                if _artifact_ready(paths, force_recompute):
                     artifact = _load_artifact(cache_paths["root"], "fits/unmasked", identity)
                     unmasked_fits[(model_family, pooling_mode)] = artifact
                     update_task_status(unmasked_task_id, "cached")
@@ -1720,7 +1756,7 @@ def run_cache_first_pipeline(
                     )
                     paths = _artifact_paths(cache_paths["root"], "fits/masked", identity)
                     masked_task_id = f"masked::{model_family}::{pooling_mode}::{mask_id}"
-                    if _cache_hit(paths["pickle"], force_recompute):
+                    if _artifact_ready(paths, force_recompute):
                         artifact = _load_artifact(cache_paths["root"], "fits/masked", identity)
                         masked_fits[(model_family, pooling_mode, mask_id)] = artifact
                         update_task_status(masked_task_id, "cached")
@@ -1756,7 +1792,7 @@ def run_cache_first_pipeline(
                                 pooling_mode=pooling_mode,
                             )
                             unmasked_paths = _artifact_paths(cache_paths["root"], "fits/unmasked", unmasked_identity)
-                            if _cache_hit(unmasked_paths["pickle"], force_recompute=False):
+                            if _artifact_ready(unmasked_paths, force_recompute=False):
                                 cached_unmasked_artifact = _load_artifact(
                                     cache_paths["root"],
                                     "fits/unmasked",
@@ -1842,7 +1878,7 @@ def run_cache_first_pipeline(
                         )
                         benchmark_paths = _artifact_paths(cache_paths["root"], "benchmarks", benchmark_identity)
                         benchmark_key = (model_family, pooling_mode, mask_id, benchmark_spec.key)
-                        if _cache_hit(benchmark_paths["pickle"], force_recompute):
+                        if _artifact_ready(benchmark_paths, force_recompute):
                             benchmark_artifacts[benchmark_key] = _load_artifact(
                                 cache_paths["root"], "benchmarks", benchmark_identity
                             )

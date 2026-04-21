@@ -36,9 +36,9 @@ at 3 pm, individuals have a 50% change of receiving a message (decided by an age
 goal: maximize step count which is the reward (I think?)
 -->
 
-The Intern Health Study (IHS) 2024 contains data on approximately 1,000 new doctors. @internhealthstudy The study collects information across three domains: mood, sleep, and physical activity. In this project, we focus only on physical activity which is measured using step count.
+For a new medical school graduate, the first year of residency is demanding and stressful. The yearly Intern Health Study (IHS) aims to study the effect of stress on mental health outcomes, enrolling over a thousand new interns each year. @internhealthstudy The study collects large amounts of data on interns, such as quarterly psychological surveys, DNA samples, daily mood scores, and sleep and physical activity data from wearable devices. In this project, we focus only on physical activity measured by step count, in the 2024 IHS.
 
-At 3:00 p.m. each day, an agent decides whether a participant receives a message, with a 50% probability of sending a message and a 50% probability of not sending one. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest.
+In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the "reward" for a given day is the number of steps a user takes in the 24 hours after the 3pm decision point in local time.
 
 <!-- 
 RoME is a robust contextual bandit method for health apps that decides when to send notifications and how to personalize interventions based on the user’s current situation. @RoME
@@ -50,7 +50,7 @@ Missing data may result in distortions that alter algorithm behavior. Robust str
 
 Reinforcement learning and contextual bandit methods are becoming increasingly important in healthcare because they enable personalized interventions. In digital health, these methods can be used to decide when and how to deliver prompts that encourage healthier behaviors, such as increasing physical activity or improving medication adherence. Contextual bandits are especially useful because they incorporate patient characteristics when selecting an action. For example, RoME is a robust contextual bandit method for mobile health applications that determines when to send notifications and how to personalize interventions based on a user’s current situation. @RoME Similarly, Oralytics is a mobile health intervention system that uses an online reinforcement learning algorithm to determine optimal times to deliver interventions that promote oral self-care behaviors. @Oralytics
 
-This project is motivated by the growing need to apply these methods in realistic settings where data is often incomplete. In our dataset, missingness occurs when users do not wear their devices which leads to gaps in the recorded activity data. Missing data can distort the information available to the algorithm and may ultimately affect its behavior and performance. As a result, robust strategies for handling delayed and missing data are essential so that the algorithm can continue to function reliably and produce reproducible results. @DigitalHealth
+This project is motivated by the growing need to apply these methods in realistic settings where data is often incomplete. In our dataset, missingness occurs when users do not wear their devices which leads to gaps in the recorded activity data. Missing data can distort the information available to the algorithm and may ultimately affect its behavior and performance. As a result, robust strategies for handling delayed and missing data are essential so that the algorithm can continue to function reliably and produce reproducible results. @DigitalHealth (check which part of the paper this cites)
 
 ## Past Project Context
 
@@ -62,25 +62,28 @@ Peer review comments - more diagnostic plots, like looking at likelihood anomali
 No description of time zone handling
 -->
 
-Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about step count in the next 24 hours following a motivating message.
+Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about predicting step count in the next 24 hours following a motivating message.
 
-Both projects face the same issue of missing data. The HRV project pooled all participants together into a population-level daily summary, taking the median measurement of each day, while we initally designed POMP models for individual participants and then **[describe our pooling method]**. We investigate the effects of missingness on model performance by masking a percentage of the data, fitting a smoother, and calculating the RMSE. [**Haven't done yet** We also include other measurements from the wearable device as covariates in our model, which the HRV project did not do.] After reading past peer reviews, we made sure to add more diagnostic plots, including those describing likelihood anomalies and effective sample size.
+Both projects face the same issue of missing data. The HRV project pooled all participants together into a population-level daily summary, taking the median measurement of each day. While we initally designed Partially Observed Markov Process (POMP) models for individual participants, we also incorporated global and partial pooling to jointly learn measurement dispersion parameters across participants in a highly compute-intensive, high parameter "panel pomp". In our search, we didn't find any projects which focused on prediction of missing data, nor which implemented a panel pomp. Because of this, we focused less on model diagnostics and scientific questions answered by inference, instead performing model selection by predictive ability, using predictions on masked data.
+
+[After reading past peer reviews, we made sure to add more diagnostic plots, including those describing likelihood anomalies and effective sample size.]
 
 ## Research Question
 
-When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward cannot be constructed, so that day provides no training information for the model. The goal of this project is to build personalized POMP models for each doctor and use smoothing to estimate the missing rewards.
+When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward (the number of steps taken in the 24 hours after 3pm) cannot be constructed, so that day provides no training information for the reinforcement learning-based intervention. The goal of this project is to build personalized POMP models for each doctor and to estimate the missing rewards.
 
 # Data Overview
 
 ## Data Description and Preprocessing
 
-Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, the dataset contains some inconsistencies across devices. For example, Fitbit records data in local time, whereas Apple and Garmin use a global time zone. Additionally, the devices may also differ because of measurement noise.
+Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, as well as behavioral differences in device ownership, the data from multiple devices cannot be combined perfectly. While it would be worthwhile to explore joint measurement models for each data stream, due to time and compute constraints, we chose to limit ourselves to users of a single device.
+
 
 ## Exploratory Data Analysis
 
-For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. It is too difficult to disentangle the biases associated with this device. 
+For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. We found it difficult to disentangle the biases associated with this device. 
 
-The FitbitHourly.csv file contains data from 299 participants with Fitbit data. We limited our analysis to the period from July 1, 2024, to September 30, 2024. Additionally, we filtered for participants with Fitbit step data in at least half of their hourly rows, which left us with 78 participants.
+The FitbitHourly.csv file contains data from 299 participants with Fitbit data. We limited our analysis to the period from July 1, 2024, to September 30, 2024, the first three months of the IHS 2024. Additionally, we filtered for participants with Fitbit step data in at least half of their hourly rows, which left us with 78 participants.
 
 <!--
 (PRUNE FitbitHourly.csv to only July 1 to September 30, readjust back to local time)
@@ -121,7 +124,7 @@ valid_ids = (
 prune_df = prune_df[prune_df['PARTICIPANTIDENTIFIER'].isin(valid_ids)]
 ```
 
-The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering for hours with non-missing data. It can be seen that there is a positive relationship and that the variance is larger than the mean.
+The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering for hours with non-missing data. The means are quite a bit larger than you'd expect if these are governed by an iid Poisson model, which motivates the use of a latent stochastic process and a measurement model with room for dispersion.
 
 ```{python}
 # | echo: false
@@ -197,9 +200,6 @@ $$
 
 The weekday effects are computed similarly.
 
-
-
-
 The observed Fitbit step count is modeled as a noisy measurement of the latent hourly steps:
 $$
 Y_t | N_t \sim \text{NegBin}(N_t, k)
@@ -210,7 +210,7 @@ $$
 \mathrm{Var}(Y_t \mid N_t) = N_t + \frac{N_t^2}{k}.
 $$
 
-Under this parametrization, larger values of $k$ correspond to less $Poisson$-like variation
+Under this parametrization, larger values of $k$ correspond to more $Poisson$-like variation. The plot above (mean vs variability in steps, what figure number?) suggested to us that 
 
 Our quantity of interest is the latent 24-hour reward:
 $$
@@ -219,7 +219,15 @@ $$
 
 where $H(d)$ denotes the 24 hourly buckets following 3pm local time. Because the reward is defined using the latent counts $N_t$, the model can be used to reconstruct daily rewards even when hourly Fitbit observations are missing.
 
+All 78 participants are jointly fit to personalized models in a "panel". We benchmarked three variations of this model aimed at estimating $k$ with no pooling, global pooling, and partial pooling (we name these models ar1personal, ar1global, and ar1partial respectively). Because $k$ is a dispersion parameter in the measurement model of the Fitbit, of the three parameters, it was the most likely candidate for information to be pooled between participants.
 
+The global pooling merely sets each participant to learn the same $k$ value for everyone, while $\phi$ and $\sigma$ remain personal to each participant. This is done in pypomp by (explain how this is set in pypomp)
+
+The no pooling learns a unique $\phi,$ $k$, and $\sigma$ for each individual. Here, there's no cross-individual learning happening, so the panel only functions as a convenient way to batch many independent time series together.
+
+With partial pooling, we modify the likelihood
+
+Three variations to estimate $k$ are considered and benchmarked. 
 
 ## Limitations of Benchmark
 

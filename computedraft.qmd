@@ -4,14 +4,15 @@ bibliography: references.bib
 nocite: "@*"
 csl: ieee.csl
 params:
-  RL: 0
+  RL: 2
   device: "gpu"
   cache_mode: "prefer_cache"    # prefer_cache | recompute_missing_only | force_recompute
   cache_version: "v1"
-  artifact_tag: "default"
+  artifact_tag: "rl2_masked_v4"
   participant_set: null         # null = RL preset default; "small_set" | "full_set"
-  model_set: "smoke"            # smoke | core | all
+  model_set: "single"           # null = use RL preset; single | smoke | core | all
                                 # smoke = ar1 + arma_aic
+                                # single = just model_family
                                 # core/all = ar1, ar2, wear_observation, wear_latent,
                                 #            ar2_wear_observation, ar2_wear_latent, arma_aic
   model_family: "ar1"
@@ -39,7 +40,12 @@ params:
   missing_fraction: 0.20
   mask_seed: 531
   n_mask_replicates: 1
-  fit_scope: "both"
+  fit_scope: "masked_only"      # null = use RL preset
+                                # fit_scope options:
+                                #   "unmasked_only"
+                                #   "masked_only"
+                                #   "both"
+                                #   "benchmarks_from_cache_only"
   section_scope: "all"
   global_seed: 531
   panel_chunk_size: null       # participant batch size for panel fits; null = RL preset default
@@ -81,10 +87,10 @@ params:
   k_fitbit_window_high: null
   log_k_fitbit_window_low: null
   log_k_fitbit_window_high: null
-  mu_log_k_fitbit_window_low: null
-  mu_log_k_fitbit_window_high: null
-  log_tau_log_k_fitbit_window_low: null
-  log_tau_log_k_fitbit_window_high: null
+  mu_log_k_fitbit_window_low: 0.2
+  mu_log_k_fitbit_window_high: 2.0
+  log_tau_log_k_fitbit_window_low: -1.7
+  log_tau_log_k_fitbit_window_high: 1.0
   eta_wear_lag1_window_low: null
   eta_wear_lag1_window_high: null
   wear_phi_window_low: null
@@ -111,13 +117,13 @@ RL = 0 means]
 ```{python}
 #| tags: [parameters]
 
-RL = 0
+RL = 2
 device = "gpu"
 cache_mode = "prefer_cache"
 cache_version = "v1"
-artifact_tag = "default"
+artifact_tag = "rl2_masked_v4"
 participant_set = None
-model_set = "smoke"
+model_set = "single"
 model_family = "ar1"
 pooling_mode = "all"
 covariate_mode = "none"
@@ -125,7 +131,7 @@ mask_regime = "random_hours"
 missing_fraction = 0.20
 mask_seed = 531
 n_mask_replicates = 1
-fit_scope = "both"
+fit_scope = "masked_only"
 section_scope = "all"
 global_seed = 531
 panel_chunk_size = None
@@ -165,10 +171,10 @@ k_fitbit_window_low = None
 k_fitbit_window_high = None
 log_k_fitbit_window_low = None
 log_k_fitbit_window_high = None
-mu_log_k_fitbit_window_low = None
-mu_log_k_fitbit_window_high = None
-log_tau_log_k_fitbit_window_low = None
-log_tau_log_k_fitbit_window_high = None
+mu_log_k_fitbit_window_low = 0.2
+mu_log_k_fitbit_window_high = 2.0
+log_tau_log_k_fitbit_window_low = -1.7
+log_tau_log_k_fitbit_window_high = 1.0
 eta_wear_lag1_window_low = None
 eta_wear_lag1_window_high = None
 wear_phi_window_low = None
@@ -387,38 +393,44 @@ def get_rl_defaults(rl: int) -> dict[str, object]:
             "RL": 2,
             "device": "gpu",
             "participant_set": "full_set",
-            "model_set": "core",
-            "panel_chunk_size": 4,
-            "stage1_starts": 10,
-            "stage2_starts": 4,
-            "stage1_keep_top": 3,
-            "stage2_keep_top": 2,
-            "stage1_particles": 100,
-            "stage2_particles": 160,
-            "stage1_if2_iterations": 4,
-            "stage2_if2_iterations": 8,
-            "stage1_cooling_fraction": 0.50,
-            "stage2_cooling_fraction": 0.50,
+            "model_set": "single",
+            "pooling_mode": "all",
+            "fit_scope": "masked_only",
+            "panel_chunk_size": 78,
+            "stage1_starts": 32,
+            "stage2_starts": 16,
+            "stage1_keep_top": 16,
+            "stage2_keep_top": 1,
+            "stage1_particles": 1024,
+            "stage2_particles": 512,
+            "stage1_if2_iterations": 16,
+            "stage2_if2_iterations": 16,
+            "stage1_cooling_fraction": 0.60,
+            "stage2_cooling_fraction": 0.60,
             "stage1_rw_sd_scale": 0.02,
             "stage2_rw_sd_scale": 0.02,
-            "cooling_fraction": 0.50,
+            "cooling_fraction": 0.60,
             "rw_sd_scale": 0.02,
-            "stage1_eval_particles": 200,
-            "stage2_eval_particles": 320,
-            "stage1_eval_reps": 2,
-            "stage2_eval_reps": 3,
+            "stage1_eval_particles": 256,
+            "stage2_eval_particles": 256,
+            "stage1_eval_reps": 16,
+            "stage2_eval_reps": 8,
             "stage1_fresh_random_starts": 0,
-            "stage2_fresh_random_starts": 1,
+            "stage2_fresh_random_starts": 0,
             "stage1_jittered_restarts": 0,
-            "stage2_jittered_restarts": 1,
-            "k_fitbit_window_low": 0.5,
-            "k_fitbit_window_high": 5.0,
-            "log_k_fitbit_window_low": -0.6931471805599453,
-            "log_k_fitbit_window_high": 1.6094379124341003,
-            "mu_log_k_fitbit_window_low": -0.6931471805599453,
-            "mu_log_k_fitbit_window_high": 1.6094379124341003,
-            "log_tau_log_k_fitbit_window_low": -0.6931471805599453,
-            "log_tau_log_k_fitbit_window_high": 1.6094379124341003,
+            "stage2_jittered_restarts": 0,
+            "phi_window_low": -0.3,
+            "phi_window_high": 1.0,
+            "sigma_window_low": 0.01,
+            "sigma_window_high": 1.8,
+            "k_fitbit_window_low": 0.75,
+            "k_fitbit_window_high": 12.0,
+            "log_k_fitbit_window_low": -0.2876820724517809,
+            "log_k_fitbit_window_high": 2.4849066497880004,
+            "mu_log_k_fitbit_window_low": 0.2,
+            "mu_log_k_fitbit_window_high": 2.0,
+            "log_tau_log_k_fitbit_window_low": -1.7,
+            "log_tau_log_k_fitbit_window_high": 1.0,
         },
     }
     if rl_int not in presets:
@@ -519,6 +531,7 @@ RAW_PARAMS = _raw_params()
 RESOLVED_CONFIG = resolve_config(RAW_PARAMS)
 
 MODEL_SET_REGISTRY = {
+    "single": [],
     "smoke": ["ar1", "arma_aic"],
     "core": [
         "ar1",
@@ -1603,6 +1616,26 @@ def summarize_daily_heldout_metrics_by_participant(hourly_frame: pd.DataFrame, r
     return pd.DataFrame(rows)
 
 
+def build_parameter_summary_from_masked_fits(
+    masked_fits: dict[tuple[str, str, str], dict[str, object]],
+) -> pd.DataFrame:
+    parameter_rows: list[pd.DataFrame] = []
+    seen_model_pooling: set[tuple[str, str]] = set()
+    for (model_family, pooling_mode, mask_id), artifact in sorted(masked_fits.items()):
+        key = (str(model_family), str(pooling_mode))
+        if key in seen_model_pooling:
+            continue
+        participant_estimates = artifact.get("participant_estimates", pd.DataFrame()).copy()
+        if participant_estimates.empty:
+            continue
+        participant_estimates["model_family"] = str(model_family)
+        participant_estimates["pooling_mode"] = str(pooling_mode)
+        participant_estimates["mask_id"] = str(mask_id)
+        parameter_rows.append(participant_estimates)
+        seen_model_pooling.add(key)
+    return pd.concat(parameter_rows, ignore_index=True) if parameter_rows else pd.DataFrame()
+
+
 def build_model_level_metric_tables(
     masked_fits: dict[tuple[str, str, str], dict[str, object]],
     parameter_summary: pd.DataFrame,
@@ -1669,11 +1702,13 @@ def build_model_level_metric_tables(
             )
         )
 
-    model_metric_summary = model_metric_summary.drop(columns=["mean_panel_unit_loglik"], errors="ignore").merge(
-        parameter_stats,
-        how="left",
-        on=["model_family", "pooling_mode"],
-    )
+    model_metric_summary = model_metric_summary.drop(columns=["mean_panel_unit_loglik"], errors="ignore")
+    if not parameter_stats.empty and {"model_family", "pooling_mode"}.issubset(parameter_stats.columns):
+        model_metric_summary = model_metric_summary.merge(
+            parameter_stats,
+            how="left",
+            on=["model_family", "pooling_mode"],
+        )
     return model_metric_summary, correlation_summary, participant_metric_frame
 
 
@@ -2429,20 +2464,25 @@ def _inv_softplus(value: jax.Array) -> jax.Array:
 
 
 def _build_par_trans(theta0: dict[str, float]) -> ParTrans:
-    positive_names = [name for name in theta0 if name in {"sigma", "k_fitbit"}]
+    softplus_positive_names = [name for name in theta0 if name == "sigma"]
+    log_positive_names = [name for name in theta0 if name == "k_fitbit"]
 
     def to_est(theta: dict[str, jax.Array]) -> dict[str, jax.Array]:
         result = dict(theta)
-        for name in positive_names:
+        for name in softplus_positive_names:
             result[name] = _inv_softplus(result[name])
+        for name in log_positive_names:
+            result[name] = jnp.log(jnp.maximum(result[name], 1e-8))
         scaled = jnp.clip((result["phi"] + 1.0) / 2.0, 1e-6, 1.0 - 1e-6)
         result["phi"] = jnp.log(scaled / (1.0 - scaled))
         return result
 
     def from_est(theta: dict[str, jax.Array]) -> dict[str, jax.Array]:
         result = dict(theta)
-        for name in positive_names:
+        for name in softplus_positive_names:
             result[name] = _softplus(result[name]) + 1e-6
+        for name in log_positive_names:
+            result[name] = jnp.exp(result[name])
         scaled = 1.0 / (1.0 + jnp.exp(-result["phi"]))
         result["phi"] = 2.0 * scaled - 1.0
         return result
@@ -3582,9 +3622,11 @@ aggregate_task_manifest = aggregate_result.task_manifest.copy()
 aggregate_derived_artifact = aggregate_result.derived_artifact
 aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", pd.DataFrame()).copy()
 aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
-aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
-aggregate_timing_summary = aggregate_result.timing_summary.copy()
 aggregate_masked_fits = aggregate_derived_artifact.get("masked_fits", {})
+aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
+if aggregate_parameter_summary.empty and aggregate_masked_fits:
+    aggregate_parameter_summary = build_parameter_summary_from_masked_fits(aggregate_masked_fits)
+aggregate_timing_summary = aggregate_result.timing_summary.copy()
 aggregate_model_metric_summary, aggregate_correlation_summary, aggregate_participant_metric_frame = build_model_level_metric_tables(
     aggregate_masked_fits,
     aggregate_parameter_summary,

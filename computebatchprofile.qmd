@@ -1,0 +1,394 @@
+---
+title: "Batching Profile Harness"
+params:
+  device: "gpu"
+  benchmark_tag: "gpu_default"
+  cache_version: "v1"
+  scenario_set: "factor_grid"      # smoke | factor_grid | full_grid
+  request_file: null
+  participant_set: "full_set"      # full_set | small_set
+  participant_count: 1
+  panel_batch_size: 1
+  model_family: "ar1"
+  pooling_mode: "unit_specific"
+  covariate_mode: "none"
+  analysis_start_utc_iso: "2024-07-01T00:00:00+00:00"
+  analysis_end_utc_iso: "2024-09-30T23:00:00+00:00"
+  assumed_local_timezone: "America/New_York"
+  random_seed: 2026
+  warmup_run: true
+  trace_enabled: true
+execute:
+  echo: false
+  warning: false
+  message: false
+format:
+  pdf:
+    include-in-header:
+      text: |
+        \usepackage{fullpage}
+number-sections: true
+---
+
+## Purpose
+
+This document profiles the batching behavior of the one-stage panel search. It is designed to answer a narrow question: when we change starts, IF2 iterations, and particles, how much time stays on the host versus how much lands inside the batched GPU search calls. The CSV summary reports approximate host setup time, synchronized device wall time, and host copy-back time. When `trace_enabled=true`, each scenario also writes a JAX profiler trace directory for exact timeline inspection.
+
+```{python}
+#| tags: [parameters]
+
+device = "gpu"
+benchmark_tag = "gpu_default"
+cache_version = "v1"
+scenario_set = "factor_grid"
+request_file = None
+participant_set = "full_set"
+participant_count = 1
+panel_batch_size = 1
+model_family = "ar1"
+pooling_mode = "unit_specific"
+covariate_mode = "none"
+analysis_start_utc_iso = "2024-07-01T00:00:00+00:00"
+analysis_end_utc_iso = "2024-09-30T23:00:00+00:00"
+assumed_local_timezone = "America/New_York"
+random_seed = 2026
+warmup_run = True
+trace_enabled = True
+```
+
+```{python}
+#| label: profile-interface
+
+import os
+import sys
+from pathlib import Path
+
+import pandas as pd
+import yaml
+from IPython.display import display
+
+
+PROJECT_ROOT = Path.cwd().resolve()
+APP_CODE_ROOT = PROJECT_ROOT.parent / "eda"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(APP_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_CODE_ROOT))
+
+
+def _raw_params() -> dict:
+    parameter_keys = [
+        "device",
+        "benchmark_tag",
+        "cache_version",
+        "scenario_set",
+        "request_file",
+        "participant_set",
+        "participant_count",
+        "panel_batch_size",
+        "model_family",
+        "pooling_mode",
+        "covariate_mode",
+        "analysis_start_utc_iso",
+        "analysis_end_utc_iso",
+        "assumed_local_timezone",
+        "random_seed",
+        "warmup_run",
+        "trace_enabled",
+    ]
+    injected = {key: globals()[key] for key in parameter_keys if key in globals()}
+    if injected:
+        return injected
+    try:
+        raw = dict(params)
+        if raw:
+            return raw
+    except Exception:
+        pass
+    qmd_path = PROJECT_ROOT / "computebatchprofile.qmd"
+    text = qmd_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+    end_idx = text.find("\n---", 4)
+    if end_idx < 0:
+        return {}
+    frontmatter = yaml.safe_load(text[4:end_idx]) or {}
+    params_block = frontmatter.get("params", {})
+    return dict(params_block) if isinstance(params_block, dict) else {}
+
+
+def _resolve_params(raw: dict[str, object]) -> dict[str, object]:
+    def _as_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    resolved = dict(raw)
+    resolved["device"] = str(resolved.get("device", "gpu")).strip().lower()
+    resolved["benchmark_tag"] = str(resolved.get("benchmark_tag", "gpu_default")).strip()
+    resolved["cache_version"] = str(resolved.get("cache_version", "v1")).strip()
+    resolved["scenario_set"] = str(resolved.get("scenario_set", "factor_grid")).strip().lower()
+    request_file_value = resolved.get("request_file")
+    resolved["request_file"] = None if request_file_value in {None, "", "null"} else str(request_file_value).strip()
+    resolved["participant_set"] = str(resolved.get("participant_set", "full_set")).strip().lower()
+    resolved["participant_count"] = int(resolved.get("participant_count", 1))
+    resolved["panel_batch_size"] = int(resolved.get("panel_batch_size", resolved["participant_count"]))
+    resolved["model_family"] = str(resolved.get("model_family", "ar1")).strip()
+    resolved["pooling_mode"] = str(resolved.get("pooling_mode", "unit_specific")).strip()
+    resolved["covariate_mode"] = str(resolved.get("covariate_mode", "none")).strip()
+    resolved["analysis_start_utc_iso"] = str(resolved.get("analysis_start_utc_iso"))
+    resolved["analysis_end_utc_iso"] = str(resolved.get("analysis_end_utc_iso"))
+    resolved["assumed_local_timezone"] = str(resolved.get("assumed_local_timezone", "America/New_York")).strip()
+    resolved["random_seed"] = int(resolved.get("random_seed", 2026))
+    resolved["warmup_run"] = _as_bool(resolved.get("warmup_run", True))
+    resolved["trace_enabled"] = _as_bool(resolved.get("trace_enabled", True))
+    return resolved
+
+
+resolved_params = _resolve_params(_raw_params())
+requested_device = resolved_params["device"]
+os.environ["JAX_PLATFORMS"] = "cuda" if requested_device == "gpu" else "cpu"
+
+from helpers.computebatchprofile import load_batch_profile_request, resolve_batch_profile_request_path
+
+imported_request_payload = None
+if resolved_params["request_file"]:
+    request_path = resolve_batch_profile_request_path(PROJECT_ROOT, resolved_params["request_file"])
+    imported_request_payload = load_batch_profile_request(request_path)
+    request_settings = imported_request_payload.get("settings", {})
+    if isinstance(request_settings, dict):
+        for key, value in request_settings.items():
+            resolved_params[key] = value
+        resolved_params["device"] = requested_device
+
+CSV_PATH = PROJECT_ROOT / "FitbitHourly.csv"
+if not CSV_PATH.exists():
+    raise FileNotFoundError("FitbitHourly.csv must be in the same folder as computebatchprofile.qmd.")
+
+
+def _display_table(df: pd.DataFrame, *, precision: int = 3) -> None:
+    display(df.style.hide(axis="index").format(precision=precision, na_rep=""))
+
+
+settings_table = pd.DataFrame([{"Setting": key, "Value": value} for key, value in resolved_params.items()])
+_display_table(settings_table, precision=4)
+if imported_request_payload is not None:
+    imported_request_table = pd.DataFrame(
+        [
+            {"Setting": "request_hash", "Value": imported_request_payload.get("request_hash")},
+            {"Setting": "label", "Value": imported_request_payload.get("label")},
+            {"Setting": "n_scenarios", "Value": len(imported_request_payload.get("scenarios", []))},
+        ]
+    )
+    _display_table(imported_request_table, precision=4)
+```
+
+```{python}
+#| label: profile-run
+
+import jax
+
+from helpers.computebatchprofile import BatchProfileScenario, run_batching_profile_suite
+
+
+backend = str(jax.default_backend())
+devices = [device.platform for device in jax.devices()]
+if requested_device == "gpu":
+    if backend != "gpu" or "gpu" not in devices:
+        raise RuntimeError(
+            "device='gpu' was requested, but JAX did not initialize a GPU backend. "
+            f"default_backend={backend!r}, devices={devices!r}"
+        )
+elif backend != "cpu":
+    raise RuntimeError(
+        "device='cpu' was requested, but JAX initialized a different backend. "
+        f"default_backend={backend!r}"
+    )
+
+profile_result = run_batching_profile_suite(
+    CSV_PATH,
+    project_root=PROJECT_ROOT,
+    benchmark_tag=resolved_params["benchmark_tag"],
+    cache_version=resolved_params["cache_version"],
+    scenario_set=resolved_params["scenario_set"],
+    participant_set=resolved_params["participant_set"],
+    participant_count=resolved_params["participant_count"],
+    panel_batch_size=resolved_params["panel_batch_size"],
+    model_family=resolved_params["model_family"],
+    pooling_mode=resolved_params["pooling_mode"],
+    covariate_mode=resolved_params["covariate_mode"],
+    analysis_start_utc_iso=resolved_params["analysis_start_utc_iso"],
+    analysis_end_utc_iso=resolved_params["analysis_end_utc_iso"],
+    assumed_local_timezone=resolved_params["assumed_local_timezone"],
+    random_seed=resolved_params["random_seed"],
+    warmup_run=resolved_params["warmup_run"],
+    trace_enabled=resolved_params["trace_enabled"],
+    scenarios=(
+        None
+        if imported_request_payload is None
+        else [BatchProfileScenario(**row) for row in imported_request_payload.get("scenarios", [])]
+    ),
+)
+
+manifest = profile_result["manifest"]
+scenario_summary = profile_result["scenario_summary"]
+stage_profile_details = profile_result["stage_profile_details"]
+trace_manifest = profile_result["trace_manifest"]
+
+run_info = pd.DataFrame(
+    [
+        {
+            "run_dir": str(profile_result["run_dir"]),
+            "scenario_summary_path": manifest["scenario_summary_path"],
+            "stage_profile_path": manifest["stage_profile_path"],
+            "trace_manifest_path": manifest["trace_manifest_path"],
+            "participant_count": manifest["participant_count"],
+            "scenario_set": manifest["scenario_set"],
+            "trace_enabled": manifest["trace_enabled"],
+        }
+    ]
+)
+```
+
+## Run Output
+
+```{python}
+#| label: profile-run-output
+
+_display_table(run_info)
+```
+
+## Scenario Summary
+
+```{python}
+#| label: profile-scenarios
+
+if scenario_summary.empty:
+    print("No scenario summary rows were recorded.")
+else:
+    print("Scenario inputs")
+    scenario_inputs = scenario_summary[
+        [
+            "scenario_id",
+            "n_starts",
+            "particles",
+            "mif_iterations",
+            "evaluation_particles",
+            "evaluation_pfilter_reps",
+        ]
+    ].rename(
+        columns={
+            "scenario_id": "scenario",
+            "n_starts": "starts",
+            "particles": "IF2 J",
+            "mif_iterations": "IF2 iter",
+            "evaluation_particles": "eval J",
+            "evaluation_pfilter_reps": "eval reps",
+        }
+    )
+    _display_table(scenario_inputs, precision=2)
+
+    print("Scenario runtimes")
+    runtime_columns = [
+        "scenario_id",
+        "approx_host_setup_seconds",
+        "approx_device_wall_seconds",
+        "approx_host_copyback_seconds",
+        "stage_runtime_seconds",
+        "search_total_runtime_seconds",
+    ]
+    if "runtime_vs_base" in scenario_summary.columns:
+        runtime_columns.append("runtime_vs_base")
+    scenario_runtime = scenario_summary[runtime_columns].rename(
+        columns={
+            "scenario_id": "scenario",
+            "approx_host_setup_seconds": "host setup (s)",
+            "approx_device_wall_seconds": "device wall (s)",
+            "approx_host_copyback_seconds": "copyback (s)",
+            "stage_runtime_seconds": "stage total (s)",
+            "search_total_runtime_seconds": "search total (s)",
+            "runtime_vs_base": "x base",
+        }
+    )
+    _display_table(scenario_runtime, precision=3)
+```
+
+## Stage Breakdown
+
+```{python}
+#| label: profile-stage-breakdown
+
+if stage_profile_details.empty:
+    print("No stage profile rows were recorded.")
+else:
+    print("Core stage timing")
+    stage_core = stage_profile_details[
+        [
+            "scenario_id",
+            "n_starts",
+            "particles",
+            "mif_iterations",
+            "mif_wall_seconds",
+            "pfilter_wall_seconds",
+            "stage_runtime_seconds",
+        ]
+    ].rename(
+        columns={
+            "scenario_id": "scenario",
+            "n_starts": "starts",
+            "particles": "IF2 J",
+            "mif_iterations": "IF2 iter",
+            "mif_wall_seconds": "mif wall (s)",
+            "pfilter_wall_seconds": "pfilter wall (s)",
+            "stage_runtime_seconds": "stage total (s)",
+        }
+    )
+    _display_table(stage_core, precision=3)
+
+    print("Host-side timing")
+    stage_host = stage_profile_details[
+        [
+            "scenario_id",
+            "candidate_build_seconds",
+            "theta_panel_build_seconds",
+            "results_materialize_seconds",
+            "approx_host_setup_seconds",
+            "approx_host_copyback_seconds",
+        ]
+    ].rename(
+        columns={
+            "scenario_id": "scenario",
+            "candidate_build_seconds": "candidate build (s)",
+            "theta_panel_build_seconds": "theta/panel build (s)",
+            "results_materialize_seconds": "materialize (s)",
+            "approx_host_setup_seconds": "host setup (s)",
+            "approx_host_copyback_seconds": "host copyback (s)",
+        }
+    )
+    _display_table(stage_host, precision=3)
+```
+
+## Trace Paths
+
+```{python}
+#| label: profile-traces
+
+if trace_manifest.empty:
+    print("Tracing disabled for this run.")
+else:
+    trace_display = trace_manifest.copy()
+    if "trace_dir" in trace_display.columns:
+        trace_display["trace_dir"] = trace_display["trace_dir"].astype(str)
+    display_columns = [column for column in ["scenario_id", "trace_dir"] if column in trace_display.columns]
+    _display_table(trace_display[display_columns] if display_columns else trace_display, precision=3)
+```
+
+## Notes
+
+- `approx_device_wall_seconds` is synchronized wall time spent inside the batched `panel.mif` and `panel.pfilter` calls. This is the best available approximation to CUDA work from Python timing.
+- `approx_host_setup_seconds` is host-side candidate generation, theta assembly, and `PanelPomp` construction before the batched GPU calls.
+- `approx_host_copyback_seconds` is host-side results materialization after the batched GPU calls.
+- For exact host vs kernel timelines, use the trace directories in `trace_manifest.csv`.
