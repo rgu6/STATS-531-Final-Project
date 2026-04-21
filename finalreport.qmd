@@ -16,6 +16,12 @@ number-sections: true
 ---
 ## Abstract {.unnumbered}
 
+The Intern Health Study (IHS) examines the health outcomes of medical interns who experience high levels of stress, and evaluates reinforcement learning–based mobile health interventions aimed at improving mood, sleep, and physical activity. Although data are collected from three wearable devices (Garmin, Apple, and Fitbit), we focus on Fitbit data for this analysis.
+
+This project focuses on latent physical activity, which we measure using step counts. A key challenge in the data is that hourly step counts are not recorded when participants are not wearing their devices. As a result, the RL model lacks a complete 24-hour reward signal and cannot directly assess whether physical activity has improved.
+
+We explore four models, ARMA, no pooling, partial pooling, and global pooling, to estimate the over-dispersion parameter $k$ for each participant. Our research goal is to predict rewards in the presence of missing data, making this a prediction task. The primary performance metric is the masked subtotal error, which masks 20\% of observed hourly data and computes the prediction error. Additional metrics include the correlation between observed and predicted step counts at both the daily and hourly levels, as well as the log-likelihood.
+
 [interface here:
 selects RL = 0, 1, or 2
 RL = 0 means]
@@ -2007,10 +2013,23 @@ Discuss the results, as well as the computing constraints.
 
 paragraph 1: summary of the analysis that was done
 
+partial pooling did slightly better compared to individual with no pooling - suggesting shared structure
+individiual
+paritial normal distribution
+globally shared k 
+
+three maksed subtotal correlation, log likelihood
+
 paragraph 2: limitations, direction for future analysis, wrap up sentence
 
 Limitations:
 Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules). Models we didn't get to try. How much masking affects performance. Different ways of doing masking (contiguous, across whole days, totally random, etc).
+
+Summary of Analysis Draft:
+
+Our project focused on predicting the 24-hour reward for participants using Fitbit step count data. We compared three different approaches: an individual (no pooling) model, in which each participant has their own over-dispersion parameter $k$; a partial pooling model, in which each participant’s $k$ value is drawn from a shared distribution with a penalty term to prevent extreme deviations; and a global pooling model, in which all participants share the same $k$ value. Our results show that partial pooling performed slightly better than no pooling which suggests the presence of shared structure across participants.
+
+The primary metric we used to evaluate how well the model, trained on 80\% of the observed hourly data, performed in prediction was the masked subtotal error. This metric measures the difference between predicted and observed values for the 20\% of data that was masked, but originally had observed step counts. Additionally, we computed the correlation between observed and predicted step counts at both the daily and hourly levels. The hourly correlation was 0.27, whereas the daily reward correlation was much stronger at 0.77. We also used log-likelihood as an additional evaluation measure.
 
 Limitations Draft:
 
