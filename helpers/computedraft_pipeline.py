@@ -1709,6 +1709,48 @@ def _artifact_ready(paths: dict[str, Path], force_recompute: bool) -> bool:
     return paths["pickle"].exists() and paths["meta"].exists()
 
 
+def _load_masked_fit_by_metadata(
+    cache_root: Path,
+    *,
+    model_family: str,
+    pooling_mode: str,
+    mask_id: str,
+) -> dict[str, object] | None:
+    masked_root = cache_root / "fits" / "masked"
+    if not masked_root.exists():
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for artifact_dir in masked_root.iterdir():
+        if not artifact_dir.is_dir():
+            continue
+        meta_path = artifact_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(meta.get("model_family")) != str(model_family):
+            continue
+        if str(meta.get("pooling_mode")) != str(pooling_mode):
+            continue
+        if str(meta.get("mask_id")) != str(mask_id):
+            continue
+        candidates.append((int(meta_path.stat().st_mtime_ns), str(artifact_dir.name)))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    selected_identity = candidates[0][1]
+    artifact = _load_artifact(cache_root, "fits/masked", selected_identity)
+    return {
+        "identity": selected_identity,
+        "artifact": artifact,
+        "n_candidates": int(len(candidates)),
+    }
+
+
 def _active_benchmark_specs(resolved_config: dict[str, object]) -> list[BenchmarkSpec]:
     raw = resolved_config.get("benchmark_keys")
     if raw is None:
@@ -2225,6 +2267,29 @@ def run_cache_first_pipeline(
                             artifact_type="masked_fit",
                             status="cached",
                         )
+                    elif not allow_fit_compute:
+                        fallback = _load_masked_fit_by_metadata(
+                            cache_paths["root"],
+                            model_family=model_family,
+                            pooling_mode=str(pooling_mode),
+                            mask_id=str(mask_id),
+                        )
+                        if fallback is not None:
+                            identity = str(fallback["identity"])
+                            artifact = fallback["artifact"]
+                            masked_fits[(model_family, pooling_mode, mask_id)] = artifact
+                            update_task_status(masked_task_id, "cached")
+                            emit_progress(
+                                f"Using metadata-matched masked fit for {model_family} / {pooling_mode} / {mask_id}",
+                                task_id=masked_task_id,
+                                model_family=model_family,
+                                pooling_mode=pooling_mode,
+                                mask_id=mask_id,
+                                artifact_type="masked_fit",
+                                status="cached",
+                                fit_identity=identity,
+                                candidate_count=int(fallback["n_candidates"]),
+                            )
                     elif allow_fit_compute and mask_payload is not None:
                         task_start = perf_counter()
                         update_task_status(masked_task_id, "running")

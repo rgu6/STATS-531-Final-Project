@@ -38,7 +38,7 @@ goal: maximize step count which is the reward (I think?)
 
 For a new medical school graduate, the first year of residency is demanding and stressful. The yearly Intern Health Study (IHS) aims to study the effect of stress on mental health outcomes, enrolling over a thousand new interns each year. @internhealthstudy The study collects large amounts of data on interns, such as quarterly psychological surveys, DNA samples, daily mood scores, and sleep and physical activity data from wearable devices. In this project, we focus only on physical activity measured by step count, in the 2024 IHS.
 
-In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the "reward" for a given day is the number of steps a user takes in the 24 hours after the 3pm decision point in local time.
+In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the "reward" for a given day is the number of steps a user takes in the 24 hours after the 3pm decision point in local time. These rewards are not needed at decision time for the RL models, but can be backfilled and trained on later, even months later potentially.
 
 <!-- 
 RoME is a robust contextual bandit method for health apps that decides when to send notifications and how to personalize interventions based on the user’s current situation. @RoME
@@ -235,6 +235,8 @@ $$
 (check the -n log tau)
 
 So the values of $\log k_i$ are pushed towards the common mean $\mu_k$; when $\tau_k$ is small, the shrinkage is strong and the model approach the global pool regime, while large $\tau_k$ implies weak shrinkage and the model approaches the no-pooling regime. Here, the filtering aims to learn the $\mu_k, \tau_k$ that maximizes this joint objective.
+
+Finally, as rewards do not need to be calculated at decision-time, we can use future information, information from events occurring after the decision point, to improve our estimates. This is a smoothing task. So in all, we run these three model variations each with a filter, and a smoother, and evaluate their performance.
 
 # Methodology and Results
 
@@ -1942,17 +1944,11 @@ Notice that the estimated latent reward always upper bounds the observed reward.
 
 ### Benchmarks
 
-Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation). 5) Correlation with the observed hourly buckets, and observed daily reward.
-
-Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, data. (We also observe how different levels of masking affect the result).
-
-For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
-
 Benchmark Draft:
 
-There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations.
+There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations. Additionally, we're fitting 78 personalized models jointly, so we need an aggregate benchmark that captures this predictive ability across all of the participants.
 
-First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero, making error calculations misleading in those cases.
+First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero. As you can see from the plot
 
 Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal. More information on how the metric was computed can be found in the supplementary material.
 
