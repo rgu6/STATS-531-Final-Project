@@ -115,7 +115,7 @@
         "number-sections: true\n",
         "---"
       ],
-      "id": "64928e1e"
+      "id": "5f3918bd"
     },
     {
       "cell_type": "markdown",
@@ -127,7 +127,7 @@
         "selects RL = 0, 1, or 2\n",
         "RL = 0 means]"
       ],
-      "id": "8e9f123a"
+      "id": "2071004a"
     },
     {
       "cell_type": "code",
@@ -202,7 +202,7 @@
         "wear_sigma_window_low = None\n",
         "wear_sigma_window_high = None"
       ],
-      "id": "bf1d5eee",
+      "id": "df8a8360",
       "execution_count": null,
       "outputs": []
     },
@@ -825,7 +825,7 @@
         "Notes:\n",
         "* sample statistics like mean steps, std, mean steps per hourly non-missing bucket, missingness, maybe box plot for missingness (min, max, quartiles)."
       ],
-      "id": "95d9395c"
+      "id": "09c43cd0"
     },
     {
       "cell_type": "code",
@@ -866,7 +866,7 @@
         "# num_participants = fitbit_hourly['PARTICIPANTIDENTIFIER'].nunique()\n",
         "# print(f\"There are {num_participants} participants in the dataset.\")"
       ],
-      "id": "fb221c4a",
+      "id": "d96ec57b",
       "execution_count": null,
       "outputs": []
     },
@@ -996,7 +996,7 @@
         "This is some UM-GPT code that is trying to plot the distribution of percent missingness for each combination of metric/device across participants. It's almost working, the issue is that the metric columns and the Missing columns have different names (e.g. appleHRAvg vs appleHRMissing (needs to be appleHRAvgMissing). If that gets corrected we could plot all of the metrics and use their missingness as extra justification for picking the steps as an outcome variable. Right now it only works for plotting steps. Also, some of the Missing columns have NaN instead of 0/1, which should probably be replace with 1 but should be double-checked.\n",
         "-->"
       ],
-      "id": "00c43346"
+      "id": "0922131d"
     },
     {
       "cell_type": "code",
@@ -1070,7 +1070,7 @@
         "# plt.tight_layout()\n",
         "# plt.show()"
       ],
-      "id": "7ec9a33b",
+      "id": "eba7b296",
       "execution_count": null,
       "outputs": []
     },
@@ -1137,7 +1137,7 @@
         "\n",
         "(ADD Parameter start box for other models)"
       ],
-      "id": "30610d1a"
+      "id": "dec10b5a"
     },
     {
       "cell_type": "code",
@@ -2160,7 +2160,7 @@
         "    )\n",
         ")"
       ],
-      "id": "f0009153",
+      "id": "51e4a6c6",
       "execution_count": null,
       "outputs": []
     },
@@ -2170,7 +2170,7 @@
       "source": [
         "paragraph 1: filter for individuals with low missing rates"
       ],
-      "id": "0cb76bb3"
+      "id": "10b8d900"
     },
     {
       "cell_type": "code",
@@ -2539,7 +2539,7 @@
         "\n",
         "display_table(participant_summary, precision=2)"
       ],
-      "id": "6ca4215b",
+      "id": "4b0e00f2",
       "execution_count": null,
       "outputs": []
     },
@@ -2560,7 +2560,7 @@
         "Design local search\n",
         "(RL = 0)"
       ],
-      "id": "3d4264d6"
+      "id": "b75414ce"
     },
     {
       "cell_type": "code",
@@ -2971,7 +2971,7 @@
         "\n",
         "display_table(local_mle_summary, precision=3)"
       ],
-      "id": "88e69e4b",
+      "id": "1ece6e51",
       "execution_count": null,
       "outputs": []
     },
@@ -2985,7 +2985,7 @@
         "\n",
         "Design global search"
       ],
-      "id": "3b6dc3a3"
+      "id": "6d5d9032"
     },
     {
       "cell_type": "code",
@@ -3597,7 +3597,7 @@
         "\n",
         "[Plot of the three participants' residuals vs missingness, with color-coded by participant, with trend line (potentially a single trendline for each person, and separate trend lines for each person)]"
       ],
-      "id": "bfd5d375"
+      "id": "46f1b20f"
     },
     {
       "cell_type": "code",
@@ -3730,7 +3730,7 @@
         "\n",
         "The aggregate analysis uses the same CSV as the individual section, but runs a cache-first panel pipeline. The expensive work is staged once here, and the visible tables and plots below only read cached or derived artifacts."
       ],
-      "id": "aabe6138"
+      "id": "2d20af09"
     },
     {
       "cell_type": "code",
@@ -4193,7 +4193,7 @@
       "source": [
         "## Participant Scatterplots"
       ],
-      "id": "536dbb29"
+      "id": "5ce14da3"
     },
     {
       "cell_type": "code",
@@ -4410,7 +4410,7 @@
         "\n",
         "## Additional background information"
       ],
-      "id": "d0edef5b"
+      "id": "db0ebc84"
     }
   ],
   "metadata": {
