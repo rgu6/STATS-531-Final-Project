@@ -1954,47 +1954,7 @@ There were several benchmarks to consider, and narrowing them down was challengi
 
 First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero, making error calculations misleading in those cases.
 
-Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal.
-
-Using hourly observations with nonzero Fitbit step counts, we compute error at the daily level to align with the research goal of predicting 24-hour rewards. First, define
-
-$$
-\mathcal{H}_d = \{ t \in d : \text{hour } t \text{ was artificially masked and } y_t \text{ is observed} \}.
-$$
-
-Let $m_d = |\mathcal{H}_d|$ represent the 20\% of available data that was masked, but originally had nonzero step counts.
-
-Next, define the true observed subtotal for this 20\% as
-
-$$
-S_d = \sum_{t \in \mathcal{H}_d} y_t,
-$$
-
-and the corresponding predicted subtotal as
-
-$$
-\hat{S}_d = \sum_{t \in \mathcal{H}_d} \hat{y}_t.
-$$
-
-The subtotal error is defined as
-
-$$
-E_d = \hat{S}_d - S_d = \sum_{t \in \mathcal{H}_d} (\hat{y}_t - y_t).
-$$
-
-It is important to normalize the subtotal error, as the analysis above shows that error increases with missingness. The normalized subtotal error is
-
-$$
-Z_d = \frac{E_d}{\sqrt{m_d}}.
-$$
-
-Finally, the benchmark is defined as
-
-$$
-\mathrm{RMSE}_{\text{subtotal}/\sqrt{m}} = \sqrt{\frac{1}{D} \sum_{d=1}^{D} Z_d^2},
-$$
-
-where $d$ indexes the 24-hour decision window.
+Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal. More information on how the metric was computed can be found in the supplementary material.
 
 ## Aggregate modeling
 
@@ -2106,6 +2066,46 @@ The following data files were used for this project:
     + moodScore: scores range from 0 to 10 based on a survey
     + messageSent: binary indicator of whether the agent sent the participant a message during that hour (1 = message was sent, 0 = no message was sent)
     + messageStrategy: NOT SURE
+
+## Masked Subtotal Benchmarking Metric
+
+Using hourly observations with nonzero Fitbit step counts, we compute error at the daily level to align with the research goal of predicting 24-hour rewards. First, define
+
+$$
+\mathcal{H}_d = \{ t \in d : \text{hour } t \text{ was artificially masked and } y_t \text{ is observed} \}.
+$$
+
+Let $m_d = |\mathcal{H}_d|$ represent the 20\% of available data that was masked, but originally had nonzero step counts.
+
+Next, define the true observed subtotal for this 20\% as
+
+$$
+S_d = \sum_{t \in \mathcal{H}_d} y_t,
+$$
+
+and the corresponding predicted subtotal as
+
+$$
+\hat{S}_d = \sum_{t \in \mathcal{H}_d} \hat{y}_t.
+$$
+
+The subtotal error is defined as
+
+$$
+E_d = \hat{S}_d - S_d = \sum_{t \in \mathcal{H}_d} (\hat{y}_t - y_t).
+$$
+
+It is important to normalize the subtotal error, as the analysis above shows that error increases with missingness. The normalized subtotal error is
+
+$$
+Z_d = \frac{E_d}{\sqrt{m_d}}.
+$$
+
+Finally, the benchmark is defined as
+
+$$
+\mathrm{RMSE}_{\text{subtotal}/\sqrt{m}} = \sqrt{\frac{1}{D} \sum_{d=1}^{D} Z_d^2},
+$$
 
 # Local search?
 
