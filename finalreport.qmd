@@ -910,7 +910,7 @@ for pid in participant_ids:
 What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
 -->
 
-We chose three participants to illustrate how different levels of missingness affect the model fitting and reward prediction. @reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. @residual-plot shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
+We chose three participants to illustrate how different levels of missingness, described in @tbl-participant-summary, affect the model fitting and reward prediction. @reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. 
 
 ```{python}
 #| echo: false
@@ -946,8 +946,6 @@ display_table(global_best_all, precision=3)
 ```
 
 ```{python}
-#| echo: false
-#| label: reward-plot
 def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     s = str(source).lower().strip()
     if s == "local":
@@ -955,35 +953,72 @@ def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     return r.global_search_result.best_run
 
 plot_source = reward_plot_fit_source  # "local" or "global"
-n = 2 #len(results) # set to 1 for individual plots, or len(results) for all participants in one figure with subplots
-fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(reward_plot_fig_width, reward_plot_fig_height * n), sharex=False)
 
+plot_ids = ["MDH-3531-4796", "MDH-7960-3351"]  # enforce top/bottom order
+plot_results = {r.participant_id: r for r in results}
+plot_results = [plot_results[pid] for pid in plot_ids if pid in plot_results]
+
+n = len(plot_results)
+fig, axes = plt.subplots(
+    nrows=n, ncols=1,
+    figsize=(reward_plot_fig_width, reward_plot_fig_height * n),
+    sharex=True
+)
 if n == 1:
     axes = [axes]
 
-for ax, r in zip(axes, results):
+for i, (ax, r) in enumerate(zip(axes, plot_results)):
     run = select_run(r, plot_source)
     reward_plot = run.reward_frame.copy()
     reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
-    reward_plot["decision_date"] = pd.to_datetime(reward_plot["decision_local_time"], errors="coerce").dt.tz_localize(None)
+    reward_plot["decision_date"] = pd.to_datetime(
+        reward_plot["decision_local_time"], errors="coerce"
+    ).dt.tz_localize(None)
 
-    ax.bar(reward_plot["decision_date"], reward_plot["latent_reward_24h"], color="#d69e2e", alpha=0.75, width=0.8, label="Filtered latent reward")
-    ax.plot(reward_plot["decision_date"], reward_plot["fitbit_observed_reward_24h"], color="#2b6cb0", linewidth=1.6, marker="o", markersize=3, label="Observed Fitbit subtotal")
+    ax.bar(
+        reward_plot["decision_date"],
+        reward_plot["latent_reward_24h"],
+        color="#d69e2e",
+        alpha=0.75,
+        width=0.8,
+        label="Filtered latent reward",
+    )
+    ax.plot(
+        reward_plot["decision_date"],
+        reward_plot["fitbit_observed_reward_24h"],
+        color="#2b6cb0",
+        linewidth=1.6,
+        marker="o",
+        markersize=3,
+        label="Observed Fitbit subtotal",
+    )
 
-    ax.set_title(f"Reconstructed 24-hour reward ({plot_source}) — {r.participant_id}", fontsize=reward_plot_title_fontsize)
     ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
-    ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
-    for label in ax.get_xticklabels():
-        label.set_rotation(45)
-        label.set_ha("right")
+    ax.tick_params(axis="y", labelsize=reward_plot_tick_fontsize)
+
+    if i < n - 1:
+        ax.tick_params(axis="x", which="both", labelbottom=False)
+    else:
+        ax.tick_params(axis="x", labelsize=reward_plot_tick_fontsize)
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+            label.set_ha("right")
 
 axes[-1].set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
 axes[0].legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
 
+# One overall title
+fig.suptitle(
+    "Reconstructed 24-hour reward (global): MDH-3531-4796 (top) and MDH-7960-3351 (bottom)",
+    fontsize=reward_plot_title_fontsize,
+    y=1.02,
+)
+
 plt.tight_layout()
 plt.show()
-
 ```
+
+@residual-plot shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
 
 ```{python}
 #| echo: false
@@ -1050,6 +1085,7 @@ ax.legend(frameon=False, ncol=1, fontsize=10)
 plt.tight_layout()
 plt.show()
 ```
+
 
 # Benchmarks for Aggregate Modeling
 
@@ -1132,7 +1168,7 @@ Finally, there are limitations in our choice of benchmark and evaluation metric.
 - Group Member 3: 
 
 # Acknowledgments {.unnumbered}
-This report used the template available in the STATS 531 github. AI was used with Chatgpt 5.3Codex, extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VScode extensions. Microsoft Copilot was also used for code autocomplete.
+This report used the template available in the STATS 531 github. AI was used with Chatgpt 5.3Codex extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VScode extensions. Microsoft Copilot and UM-GPT 5.2 were also used.
 
 # Bibliography {.unnumbered}
 
