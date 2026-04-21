@@ -845,7 +845,6 @@ print(
     )
 )
 ```
-paragraph 1: filter for individuals with low missing rates
 
 ```{python}
 #| echo: false
