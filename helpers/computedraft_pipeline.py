@@ -2061,11 +2061,19 @@ def run_cache_first_pipeline(
     search_windows = resolved_config["search_windows"]
     default_backward_particles = int(stage_configs[-1].evaluation_particles) if stage_configs else 200
     backward_smoother_particles = int(
-        resolved_config.get("backward_smoother_particles", default_backward_particles)
+        default_backward_particles
+        if resolved_config.get("backward_smoother_particles") is None
+        else resolved_config.get("backward_smoother_particles")
     )
-    backward_smoother_trajectories = int(resolved_config.get("backward_smoother_trajectories", 80))
+    backward_smoother_trajectories = int(
+        80
+        if resolved_config.get("backward_smoother_trajectories") is None
+        else resolved_config.get("backward_smoother_trajectories")
+    )
     backward_smoother_seed = int(
-        resolved_config.get("backward_smoother_seed", int(resolved_config["global_seed"]) + 70_000)
+        int(resolved_config["global_seed"]) + 70_000
+        if resolved_config.get("backward_smoother_seed") is None
+        else resolved_config.get("backward_smoother_seed")
     )
 
     mask_payloads: dict[str, dict[str, object]] = {}

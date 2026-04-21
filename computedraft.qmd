@@ -1161,6 +1161,10 @@ reward_plot_legend_fontsize = 20
 residual_plot_fit_source = "global"  # "local" or "global"
 residual_plot_fig_width = 5
 residual_plot_fig_height = 4
+
+# Benchmark-only reruns should skip the pedagogical individual-search section
+# and go directly to the aggregate cache-first pipeline.
+run_individual_search_section = str(RESOLVED_CONFIG["fit_scope"]) != "benchmarks_from_cache_only"
 ```
 
 ```{python}
@@ -2409,44 +2413,52 @@ def get_cached_hourly_model_data(
         prepare_for_store=clone_hourly_step_model_data,
     )
 
-participant_hourly = get_cached_participant_hourly(
-    participant_id,
-    start_utc=analysis_start,
-    end_utc=analysis_end,
-    lookback_hours=participant_data_lookback_hours,
-)
+participant_hourly = None
+hourly_data = None
+initial_params = {}
+active_free_params = []
 
-hourly_data = get_cached_hourly_model_data(
-    participant_hourly,
-    participant_id=participant_id,
-    start_utc=analysis_start,
-    end_utc=analysis_end,
-    covariate_keys=covariate_keys,
-    assumed_timezone=assumed_local_timezone,
-)
+if run_individual_search_section:
+    participant_hourly = get_cached_participant_hourly(
+        participant_id,
+        start_utc=analysis_start,
+        end_utc=analysis_end,
+        lookback_hours=participant_data_lookback_hours,
+    )
 
-initial_params = build_step_pomp_default_params(hourly_data)
-for param_name, param_value in initial_param_overrides.items():
-    if param_name in initial_params:
-        initial_params[param_name] = param_value
+    hourly_data = get_cached_hourly_model_data(
+        participant_hourly,
+        participant_id=participant_id,
+        start_utc=analysis_start,
+        end_utc=analysis_end,
+        covariate_keys=covariate_keys,
+        assumed_timezone=assumed_local_timezone,
+    )
 
-active_free_params = [param for param in free_params if param in initial_params]
+    initial_params = build_step_pomp_default_params(hourly_data)
+    for param_name, param_value in initial_param_overrides.items():
+        if param_name in initial_params:
+            initial_params[param_name] = param_value
 
-fitbit_missingness_percentage = 100.0 * (
-    1.0 - float(hourly_data.hourly_frame["fitbit_observed"].mean())
-)
+    active_free_params = [param for param in free_params if param in initial_params]
 
-participant_summary = pd.DataFrame(
-    [
-        {
-            "Participant ID": participant_id,
-            "Complete 24 hour reward windows": int(hourly_data.decision_window_frame["complete_window"].sum()),
-            "Fitbit missingness percentage": f"{fitbit_missingness_percentage:.2f}%",
-        }
-    ]
-)
+    fitbit_missingness_percentage = 100.0 * (
+        1.0 - float(hourly_data.hourly_frame["fitbit_observed"].mean())
+    )
 
-display_table(participant_summary, precision=2)
+    participant_summary = pd.DataFrame(
+        [
+            {
+                "Participant ID": participant_id,
+                "Complete 24 hour reward windows": int(hourly_data.decision_window_frame["complete_window"].sum()),
+                "Fitbit missingness percentage": f"{fitbit_missingness_percentage:.2f}%",
+            }
+        ]
+    )
+
+    display_table(participant_summary, precision=2)
+else:
+    print("Skipping individual participant search section because fit_scope=benchmarks_from_cache_only.")
 ```
 
 
@@ -2851,28 +2863,32 @@ def get_cached_local_step_pomp_result(
     )
 
 
-local_step_pomp_result = get_cached_local_step_pomp_result(
-    hourly_data,
-    participant_id=participant_id,
-    analysis_start=analysis_start,
-    analysis_end=analysis_end,
-    initial_params=initial_params,
-    free_params=active_free_params,
-    local_if2_controls=local_if2_controls,
-)
+local_step_pomp_result = None
+if run_individual_search_section:
+    local_step_pomp_result = get_cached_local_step_pomp_result(
+        hourly_data,
+        participant_id=participant_id,
+        analysis_start=analysis_start,
+        analysis_end=analysis_end,
+        initial_params=initial_params,
+        free_params=active_free_params,
+        local_if2_controls=local_if2_controls,
+    )
 
-local_mle_summary = pd.DataFrame(
-    [
-        {
-            "Search": "Local MLE",
-            "Participant ID": participant_id,
-            "LogLik": local_step_pomp_result.loglik,
-            **local_step_pomp_result.fitted_params,
-        }
-    ]
-).round(3)
+    local_mle_summary = pd.DataFrame(
+        [
+            {
+                "Search": "Local MLE",
+                "Participant ID": participant_id,
+                "LogLik": local_step_pomp_result.loglik,
+                **local_step_pomp_result.fitted_params,
+            }
+        ]
+    ).round(3)
 
-display_table(local_mle_summary, precision=3)
+    display_table(local_mle_summary, precision=3)
+else:
+    print("Skipping local participant search because fit_scope=benchmarks_from_cache_only.")
 ```
 
 
@@ -3378,62 +3394,68 @@ global_search_stage_configs = [
     for stage_dict in global_search_stage_controls
 ]
 
-global_search_result = get_cached_global_search_result(
-    hourly_data,
-    participant_id=participant_id,
-    analysis_start=analysis_start,
-    analysis_end=analysis_end,
-    initial_params=initial_params,
-    free_params=active_free_params,
-    start_box=global_search_start_box,
-    stage_configs=global_search_stage_configs,
-    random_seed=global_search_controls["random_seed"],
-    include_current_theta_as_start=global_search_controls["include_current_theta_as_start"],
-    jitter_scale=global_search_controls["jitter_scale"],
-    box_shrink_factor_per_stage=global_search_controls["box_shrink_factor_per_stage"],
-)
-
-global_best_fit = global_search_result.best_fit
-global_best_run = global_search_result.best_run
-
-global_best_summary = pd.DataFrame(
-    [
-        {
-            "Search": "Global MLE",
-            "Participant ID": participant_id,
-            "LogLik": global_best_run.loglik,
-            **global_best_fit.fitted_params,
-        }
-    ]
-).round(3)
-
-global_stage_summary = (
-    global_search_result.stage_summary[
-        [
-            "stage_name",
-            "n_starts",
-            "n_successful",
-            "keep_top",
-            "best_loglik",
-            "runtime_seconds",
-        ]
-    ]
-    .rename(
-        columns={
-            "stage_name": "Stage",
-            "n_starts": "Starts",
-            "n_successful": "Successful fits",
-            "keep_top": "Keep top",
-            "best_loglik": "Best logLik",
-            "runtime_seconds": "Runtime (s)",
-        }
+global_search_result = None
+global_best_fit = None
+global_best_run = None
+if run_individual_search_section:
+    global_search_result = get_cached_global_search_result(
+        hourly_data,
+        participant_id=participant_id,
+        analysis_start=analysis_start,
+        analysis_end=analysis_end,
+        initial_params=initial_params,
+        free_params=active_free_params,
+        start_box=global_search_start_box,
+        stage_configs=global_search_stage_configs,
+        random_seed=global_search_controls["random_seed"],
+        include_current_theta_as_start=global_search_controls["include_current_theta_as_start"],
+        jitter_scale=global_search_controls["jitter_scale"],
+        box_shrink_factor_per_stage=global_search_controls["box_shrink_factor_per_stage"],
     )
-    .round(3)
-)
-global_stage_summary.insert(0, "Search", "Global")
 
-display_table(global_best_summary, precision=3)
-display_table(global_stage_summary, precision=3)
+    global_best_fit = global_search_result.best_fit
+    global_best_run = global_search_result.best_run
+
+    global_best_summary = pd.DataFrame(
+        [
+            {
+                "Search": "Global MLE",
+                "Participant ID": participant_id,
+                "LogLik": global_best_run.loglik,
+                **global_best_fit.fitted_params,
+            }
+        ]
+    ).round(3)
+
+    global_stage_summary = (
+        global_search_result.stage_summary[
+            [
+                "stage_name",
+                "n_starts",
+                "n_successful",
+                "keep_top",
+                "best_loglik",
+                "runtime_seconds",
+            ]
+        ]
+        .rename(
+            columns={
+                "stage_name": "Stage",
+                "n_starts": "Starts",
+                "n_successful": "Successful fits",
+                "keep_top": "Keep top",
+                "best_loglik": "Best logLik",
+                "runtime_seconds": "Runtime (s)",
+            }
+        )
+        .round(3)
+    )
+    global_stage_summary.insert(0, "Search", "Global")
+
+    display_table(global_best_summary, precision=3)
+    display_table(global_stage_summary, precision=3)
+else:
+    print("Skipping global participant search because fit_scope=benchmarks_from_cache_only.")
 ```
 
 ```{python}
@@ -3441,23 +3463,26 @@ display_table(global_stage_summary, precision=3)
 #| message: false
 #| label: coefficent-table
 
-# Compare the starting values with the fitted local MLE so it is easy to see
-# which coefficients moved under the local search and the two-stage global search.
-coefficient_rows = []
-for param_name in initial_params:
-    local_value = local_step_pomp_result.fitted_params.get(param_name, initial_params[param_name])
-    global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
-    coefficient_rows.append(
-        {
-            "Parameter": param_name,
-            "Initial value": initial_params[param_name],
-            "Local MLE value": local_value,
-            "Global MLE value": global_value,
-        }
-    )
+if run_individual_search_section:
+    # Compare the starting values with the fitted local MLE so it is easy to see
+    # which coefficients moved under the local search and the two-stage global search.
+    coefficient_rows = []
+    for param_name in initial_params:
+        local_value = local_step_pomp_result.fitted_params.get(param_name, initial_params[param_name])
+        global_value = global_best_fit.fitted_params.get(param_name, initial_params[param_name])
+        coefficient_rows.append(
+            {
+                "Parameter": param_name,
+                "Initial value": initial_params[param_name],
+                "Local MLE value": local_value,
+                "Global MLE value": global_value,
+            }
+        )
 
-coefficient_table = pd.DataFrame(coefficient_rows).round(3)
-display_table(coefficient_table, precision=3)
+    coefficient_table = pd.DataFrame(coefficient_rows).round(3)
+    display_table(coefficient_table, precision=3)
+else:
+    print("Skipping coefficient comparison because fit_scope=benchmarks_from_cache_only.")
 ```
 
 ### Diagnostics
@@ -3480,57 +3505,60 @@ Divergence for people with contiguous missingness, vs spotty missingness
 #| echo: false
 #| label: filtered-reward-plot
 
-# Plot the filtered 24-hour reward reconstruction after the local 3pm decision
-# time. By default this uses the best fit from the global two-stage search.
-def select_plot_result(plot_source: str) -> tuple[StepPompRunResult, str]:
-    normalized_source = str(plot_source).strip().lower()
-    if normalized_source == "local":
-        return local_step_pomp_result, "local fit"
-    return global_best_run, "global-best fit"
+if run_individual_search_section:
+    # Plot the filtered 24-hour reward reconstruction after the local 3pm decision
+    # time. By default this uses the best fit from the global two-stage search.
+    def select_plot_result(plot_source: str) -> tuple[StepPompRunResult, str]:
+        normalized_source = str(plot_source).strip().lower()
+        if normalized_source == "local":
+            return local_step_pomp_result, "local fit"
+        return global_best_run, "global-best fit"
 
 
-plot_result, plot_label = select_plot_result(reward_plot_fit_source)
+    plot_result, plot_label = select_plot_result(reward_plot_fit_source)
 
-reward_plot = plot_result.reward_frame.copy()
-reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
-reward_plot["decision_date"] = pd.to_datetime(
-    reward_plot["decision_local_time"],
-    errors="coerce",
-).dt.tz_localize(None)
+    reward_plot = plot_result.reward_frame.copy()
+    reward_plot = reward_plot.loc[reward_plot["complete_window"]].copy()
+    reward_plot["decision_date"] = pd.to_datetime(
+        reward_plot["decision_local_time"],
+        errors="coerce",
+    ).dt.tz_localize(None)
 
-plt.style.use("seaborn-v0_8-whitegrid")
-fig, ax = plt.subplots(figsize=(reward_plot_fig_width, reward_plot_fig_height))
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(reward_plot_fig_width, reward_plot_fig_height))
 
-ax.bar(
-    reward_plot["decision_date"],
-    reward_plot["latent_reward_24h"],
-    color="#d69e2e",
-    alpha=0.75,
-    width=0.8,
-    label="Filtered latent reward",
-)
-ax.plot(
-    reward_plot["decision_date"],
-    reward_plot["fitbit_observed_reward_24h"],
-    color="#2b6cb0",
-    linewidth=1.8,
-    marker="o",
-    markersize=3,
-    label="Observed Fitbit subtotal",
-)
+    ax.bar(
+        reward_plot["decision_date"],
+        reward_plot["latent_reward_24h"],
+        color="#d69e2e",
+        alpha=0.75,
+        width=0.8,
+        label="Filtered latent reward",
+    )
+    ax.plot(
+        reward_plot["decision_date"],
+        reward_plot["fitbit_observed_reward_24h"],
+        color="#2b6cb0",
+        linewidth=1.8,
+        marker="o",
+        markersize=3,
+        label="Observed Fitbit subtotal",
+    )
 
-ax.set_title(
-    f"Reconstructed 24-hour filtered reward for {participant_id} ({plot_label})",
-    fontsize=reward_plot_title_fontsize,
-)
-ax.set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
-ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
-ax.legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
-ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
-plt.xticks(rotation=45, ha="right")
+    ax.set_title(
+        f"Reconstructed 24-hour filtered reward for {participant_id} ({plot_label})",
+        fontsize=reward_plot_title_fontsize,
+    )
+    ax.set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
+    ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
+    ax.legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
+    ax.tick_params(axis="both", labelsize=reward_plot_tick_fontsize)
+    plt.xticks(rotation=45, ha="right")
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Skipping individual diagnostic reward plot because fit_scope=benchmarks_from_cache_only.")
 ```
 
 ```{python}
@@ -3539,44 +3567,47 @@ plt.show()
 #| echo: false
 #| label: residual-plot
 
-# Plot residual = filtered latent reward - observed Fitbit subtotal against the
-# number of missing Fitbit hours in the 24-hour reward window.
-plot_result, _ = select_plot_result(residual_plot_fit_source)
-residual_plot = plot_result.reward_frame.copy()
-residual_plot = residual_plot.loc[residual_plot["complete_window"]].copy()
-residual_plot["missing_fitbit_hours"] = (
-    24
-    - pd.to_numeric(
-        residual_plot["fitbit_observed_hours"],
-        errors="coerce",
-    ).fillna(0.0)
-).round().clip(lower=0, upper=24).astype(int)
-residual_plot["reward_residual"] = (
-    pd.to_numeric(residual_plot["latent_reward_24h"], errors="coerce")
-    - pd.to_numeric(residual_plot["fitbit_observed_reward_24h"], errors="coerce")
-)
+if run_individual_search_section:
+    # Plot residual = filtered latent reward - observed Fitbit subtotal against the
+    # number of missing Fitbit hours in the 24-hour reward window.
+    plot_result, _ = select_plot_result(residual_plot_fit_source)
+    residual_plot = plot_result.reward_frame.copy()
+    residual_plot = residual_plot.loc[residual_plot["complete_window"]].copy()
+    residual_plot["missing_fitbit_hours"] = (
+        24
+        - pd.to_numeric(
+            residual_plot["fitbit_observed_hours"],
+            errors="coerce",
+        ).fillna(0.0)
+    ).round().clip(lower=0, upper=24).astype(int)
+    residual_plot["reward_residual"] = (
+        pd.to_numeric(residual_plot["latent_reward_24h"], errors="coerce")
+        - pd.to_numeric(residual_plot["fitbit_observed_reward_24h"], errors="coerce")
+    )
 
-plt.style.use("seaborn-v0_8-whitegrid")
-fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
 
-ax.scatter(
-    residual_plot["missing_fitbit_hours"],
-    residual_plot["reward_residual"],
-    color="#d69e2e",
-    edgecolor="#8c6d1f",
-    alpha=0.8,
-    s=40,
-)
-ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
+    ax.scatter(
+        residual_plot["missing_fitbit_hours"],
+        residual_plot["reward_residual"],
+        color="#d69e2e",
+        edgecolor="#8c6d1f",
+        alpha=0.8,
+        s=40,
+    )
+    ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
 
-ax.set_title(f"Filtered reward residual vs missingness for {participant_id}")
-ax.set_xlabel("Missing Fitbit hours in 24-hour window")
-ax.set_ylabel("Filtered reward - observed subtotal")
-ax.set_xlim(-0.5, 24.5)
-ax.set_xticks(np.arange(0, 25, 1))
+    ax.set_title(f"Filtered reward residual vs missingness for {participant_id}")
+    ax.set_xlabel("Missing Fitbit hours in 24-hour window")
+    ax.set_ylabel("Filtered reward - observed subtotal")
+    ax.set_xlim(-0.5, 24.5)
+    ax.set_xticks(np.arange(0, 25, 1))
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Skipping individual diagnostic residual plot because fit_scope=benchmarks_from_cache_only.")
 ```
 
 

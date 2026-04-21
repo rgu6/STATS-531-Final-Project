@@ -70,14 +70,12 @@ Both projects face the same issue of missing data. The HRV project pooled all pa
 
 When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward (the number of steps taken in the 24 hours after 3pm) cannot be constructed, so that day provides no training information for the reinforcement learning-based intervention. The goal of this project is to build personalized POMP models for each doctor and to estimate the missing rewards.
 
-# Data Overview
+# Exploratory Data Analysis
 
-## Data Description and Preprocessing
 
 Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, as well as behavioral differences in device ownership, the data from multiple devices cannot be combined perfectly. While it would be worthwhile to explore joint measurement models for each data stream, due to time and compute constraints, we chose to limit ourselves to users of a single device.
 
 
-## Exploratory Data Analysis
 
 For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Of the approximately 1,000 doctors in the data, only 88 used Garmin. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches. In other words, different apps are allowed to sync and aggregate data. For example, HealthKit can integrate with other wearables such as Garmin, so the step data may not even originate from an Apple Watch. We found it difficult to disentangle the biases associated with this device. 
 
@@ -160,7 +158,7 @@ plt.title('Missing Data per Participant')
 plt.show()
 ```
 
-### Model
+# Model Design
 
 Our aim is to estimate the "24-hour-reward", the sum of the steps in the 24 hours following 3pm local time. We work at the hourly level, so each hour is treated as one bucket. Fitbit step counts may be observed data may be observed or missing in a given bucket, which motivates a partially observed Markov process (POMP) model:
 
@@ -236,7 +234,16 @@ So the values of $\log k_i$ are pushed towards the common mean $\mu_k$; when $\t
 
 Finally, as rewards do not need to be calculated at decision-time, we can use future information, information from events occurring after the decision point, to improve our estimates. This is a smoothing task. So in all, we run these three model variations each with a filter, and a smoother, and evaluate their performance.
 
-# Methodology and Results
+# Individual Participant Demonstrations
+
+outline 2:
+1) Paragraph explaining what we're doing.
+
+2) Show plot of reconstructed rewards for both high missingness and low missingness, one paragraph to discuss both.
+
+3) Show plot of missingness vs residual, paragraph to discuss.
+
+(stretch goal 4, show some diagnostics)
 
 <!--
 (ADD Parameter start box for other models)
@@ -1947,7 +1954,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-### Benchmarks
+# Benchmarks for Aggregate Modeling
 
 Benchmark Draft:
 
@@ -1957,26 +1964,12 @@ First, we considered evaluating error, defined as the difference between predict
 
 Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal. More information on how the metric was computed can be found in the supplementary material.
 
-## Aggregate modeling
-
-WHY do we try stuff with k
-
-1) Above, do a profile likelihood on $k$ to show that it is sensitive to choice (profile likelihood and maybe profile daily reward RMSE)
-
-2) We do a panel of 78 users, and we wanted to pool information between them. The best candidate for this was $k$, because it relates to the measurement model of the shared Fitbit device. This motivated us to try two kinds of pooling, global pooling, and partial pooling.
-
-We predicted that global pool will do worse, because $k$ choice is sensitive and there is some variance for individuals, but we expected partial pooling to perform better, because it allows a personalized $k$, but information between participants to be shared.
-
-Small panel pomp explanation with citation.
-
-Explain the $k$ global pooling, and the $k$ partial pooling and penalty equation.
-
-## Computing settings
+# Inference Settings and Computing Constraints(considerations)
 
 Global search parameters used, and challenges of running panel pomp on 6 models, across 78 individuals.
 
 
-## Results
+# Results
 
 
 Models we analyze:
@@ -2003,9 +1996,6 @@ average k, std k
 phi vs sigma, sigma vs k, phi vs k
 
 Each point is for a single participant after inference, not for a single iteration of filtering. Doesn't check convergence of filtering, looks at similarity between users, and potential parameter tradeoffs, after filtering.
-
-# Analysis of benchmarks
-Discuss the results, as well as the computing constraints.
 
 # Conclusion
 
