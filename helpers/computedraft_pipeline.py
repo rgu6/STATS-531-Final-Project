@@ -43,6 +43,7 @@ POMP_FAMILY_TO_ARCHITECTURE = {
 }
 
 AGGREGATE_TASK_CACHE_SCHEMA_VERSION = "v2"
+SMOOTHER_TASK_CACHE_SCHEMA_VERSION = "v1"
 
 COVARIATE_MODE_MAP = {
     "none": [],
@@ -84,6 +85,13 @@ BENCHMARK_SPECS = {
         version="v1",
     ),
 }
+
+SUPPORTED_SMOOTHER_SCOPE = {
+    "none",
+    "from_cache_only",
+    "compute_missing_only",
+}
+SUPPORTED_SMOOTHER_METHODS = {"backward_particle"}
 
 
 def _json_default(value: object) -> object:
@@ -230,6 +238,7 @@ def _benchmark_identity(
     mask_id: str,
     benchmark_key: str,
     benchmark_version: str,
+    smoother_identity: str | None = None,
 ) -> str:
     return _sha_identity(
         {
@@ -241,9 +250,79 @@ def _benchmark_identity(
             "pooling_mode": str(pooling_mode),
             "mask_id": str(mask_id),
             "masked_fit_identity": str(masked_fit_identity),
+            "smoother_identity": None if smoother_identity is None else str(smoother_identity),
             "positive_truth_only": True,
         }
     )
+
+
+def _smoother_identity(
+    *,
+    source_fit_identity: str,
+    model_family: str,
+    pooling_mode: str,
+    mask_id: str,
+    smoother_method: str,
+    backward_smoother_particles: int,
+    backward_smoother_trajectories: int,
+    backward_smoother_seed: int,
+) -> str:
+    # Smoother cache identity is downstream of the fit identity so smoother settings
+    # can change without invalidating the expensive fit artifacts.
+    return _sha_identity(
+        {
+            "kind": "smoother",
+            "schema_version": SMOOTHER_TASK_CACHE_SCHEMA_VERSION,
+            "source_fit_identity": str(source_fit_identity),
+            "model_family": str(model_family),
+            "pooling_mode": str(pooling_mode),
+            "mask_id": str(mask_id),
+            "smoother_method": str(smoother_method),
+            "backward_smoother_particles": int(backward_smoother_particles),
+            "backward_smoother_trajectories": int(backward_smoother_trajectories),
+            "backward_smoother_seed": int(backward_smoother_seed),
+        }
+    )
+
+
+def _normalize_smoother_scope(raw_value: object) -> str:
+    normalized = str("none" if raw_value is None else raw_value).strip().lower()
+    if normalized not in SUPPORTED_SMOOTHER_SCOPE:
+        raise ValueError(
+            f"Unknown smoother_scope: {raw_value!r}. Supported values: {sorted(SUPPORTED_SMOOTHER_SCOPE)}"
+        )
+    return normalized
+
+
+def _normalize_smoother_method(raw_value: object) -> str:
+    normalized = str("backward_particle" if raw_value is None else raw_value).strip().lower()
+    if normalized not in SUPPORTED_SMOOTHER_METHODS:
+        raise ValueError(
+            f"Unknown smoother_method: {raw_value!r}. Supported values: {sorted(SUPPORTED_SMOOTHER_METHODS)}"
+        )
+    return normalized
+
+
+def _smoother_supported_for_configuration(
+    *,
+    model_family: str,
+    pooling_mode: str,
+    architecture_key: str | None,
+) -> tuple[bool, str]:
+    if str(model_family) != "ar1":
+        return False, "unsupported_model_family"
+    if str(pooling_mode) not in {"unit_specific", "global_shared_k", "partial_pooled_k"}:
+        return False, "unsupported_pooling_mode"
+    if architecture_key is None:
+        return False, "missing_architecture"
+    architecture = ARCHITECTURE_SPEC_LOOKUP[architecture_key]
+    if int(getattr(architecture, "ar_order", 1)) != 1:
+        return False, "unsupported_ar_order"
+    if int(getattr(architecture, "seasonal_lag_hours", 0)) > 0:
+        return False, "unsupported_seasonal_model"
+    if str(getattr(architecture, "missingness_mode", "standard")).strip().lower() != "standard":
+        return False, "unsupported_missingness_mode"
+    return True, "supported"
 
 
 def _cache_hit(path: Path, force_recompute: bool) -> bool:
@@ -627,17 +706,20 @@ def _chunk_participant_ids(participant_ids: list[str], panel_chunk_size: int | N
     return [participant_ids[index : index + chunk_size] for index in range(0, len(participant_ids), chunk_size)]
 
 
-def _prediction_table_from_run(
-    run_result,
+def _prediction_table_from_frames(
+    hourly_frame: pd.DataFrame,
+    reward_window_frame: pd.DataFrame,
     *,
     participant_id: str,
     model_family: str,
     pooling_mode: str,
     covariate_mode: str,
     mask_id: str | None,
+    predicted_observed_column: str,
+    predicted_latent_column: str,
 ) -> pd.DataFrame:
-    frame = run_result.plot_frame.copy()
-    frame = _attach_reward_window_ids(frame, run_result.reward_frame)
+    frame = hourly_frame.copy()
+    frame = _attach_reward_window_ids(frame, reward_window_frame)
     frame["participant_id"] = str(participant_id)
     frame["model_family"] = str(model_family)
     frame["pooling_mode"] = str(pooling_mode)
@@ -649,8 +731,53 @@ def _prediction_table_from_run(
     )
     frame["is_artificially_masked"] = _optional_numeric(frame, "fitbit_masked_for_eval").fillna(0.0)
     frame["observed_hourly_value"] = _optional_numeric(frame, "fitbit_steps_obs")
-    frame["predicted_observed_scale_hourly_value"] = _optional_numeric(frame, "fitbit_steps_obs_fitted")
-    frame["predicted_latent_hourly_value"] = _optional_numeric(frame, "latent_fitbit_scale_steps")
+    frame["predicted_observed_scale_hourly_value"] = _optional_numeric(frame, predicted_observed_column)
+    frame["predicted_latent_hourly_value"] = _optional_numeric(frame, predicted_latent_column)
+    return frame
+
+
+def _prediction_table_from_run(
+    run_result,
+    *,
+    participant_id: str,
+    model_family: str,
+    pooling_mode: str,
+    covariate_mode: str,
+    mask_id: str | None,
+) -> pd.DataFrame:
+    return _prediction_table_from_frames(
+        run_result.plot_frame,
+        run_result.reward_frame,
+        participant_id=participant_id,
+        model_family=model_family,
+        pooling_mode=pooling_mode,
+        covariate_mode=covariate_mode,
+        mask_id=mask_id,
+        predicted_observed_column="fitbit_steps_obs_fitted",
+        predicted_latent_column="latent_fitbit_scale_steps",
+    )
+
+
+def _reward_table_from_frames(
+    reward_frame: pd.DataFrame,
+    *,
+    participant_id: str,
+    model_family: str,
+    pooling_mode: str,
+    mask_id: str | None,
+    predicted_latent_reward_column: str,
+) -> pd.DataFrame:
+    frame = reward_frame.copy()
+    frame["participant_id"] = str(participant_id)
+    frame["model_family"] = str(model_family)
+    frame["pooling_mode"] = str(pooling_mode)
+    frame["mask_id"] = mask_id
+    frame["predicted_full_24h_reward"] = _optional_numeric(frame, predicted_latent_reward_column)
+    frame["observed_subtotal"] = _optional_numeric(frame, "fitbit_observed_reward_24h")
+    frame["artificially_masked_hours"] = 0
+    frame["naturally_missing_hours"] = (
+        24 - _optional_numeric(frame, "fitbit_observed_hours").fillna(0).astype(int)
+    )
     return frame
 
 
@@ -662,18 +789,14 @@ def _reward_table_from_run(
     pooling_mode: str,
     mask_id: str | None,
 ) -> pd.DataFrame:
-    frame = run_result.reward_frame.copy()
-    frame["participant_id"] = str(participant_id)
-    frame["model_family"] = str(model_family)
-    frame["pooling_mode"] = str(pooling_mode)
-    frame["mask_id"] = mask_id
-    frame["predicted_full_24h_reward"] = _optional_numeric(frame, "latent_reward_24h")
-    frame["observed_subtotal"] = _optional_numeric(frame, "fitbit_observed_reward_24h")
-    frame["artificially_masked_hours"] = 0
-    frame["naturally_missing_hours"] = (
-        24 - _optional_numeric(frame, "fitbit_observed_hours").fillna(0).astype(int)
+    return _reward_table_from_frames(
+        run_result.reward_frame,
+        participant_id=participant_id,
+        model_family=model_family,
+        pooling_mode=pooling_mode,
+        mask_id=mask_id,
+        predicted_latent_reward_column="latent_reward_24h",
     )
-    return frame
 
 
 def _compute_masked_hour_counts(hourly_frame: pd.DataFrame, reward_window_frame: pd.DataFrame) -> pd.DataFrame:
@@ -1158,6 +1281,255 @@ def run_panel_pomp_model(
     }
 
 
+def _participant_params_from_estimate_row(estimate_row: pd.Series) -> dict[str, float]:
+    skip_columns = {
+        "participantidentifier",
+        "participant_id",
+        "panel_unit_loglik",
+        "k_fitbit_pooling_mode",
+        "panel_chunk_index",
+        "panel_chunk_size_requested",
+        "panel_chunk_n_participants",
+    }
+    params: dict[str, float] = {}
+    for key, value in estimate_row.items():
+        if str(key) in skip_columns:
+            continue
+        numeric_value = pd.to_numeric(value, errors="coerce")
+        if pd.notna(numeric_value):
+            params[str(key)] = float(numeric_value)
+    return params
+
+
+def _participant_estimate_lookup_column(participant_estimates: pd.DataFrame) -> str | None:
+    for candidate in ("participantidentifier", "participant_id", "PARTICIPANTIDENTIFIER"):
+        if candidate in participant_estimates.columns:
+            return candidate
+    return None
+
+
+def _stable_participant_seed(base_seed: int, participant_id: str) -> int:
+    offset = sum((index + 1) * ord(char) for index, char in enumerate(str(participant_id)))
+    return int(base_seed) + int(offset % 1_000_000)
+
+
+def build_backward_smoother_artifact_from_masked_fit(
+    masked_fit_artifact: dict[str, object],
+    *,
+    data_by_participant: dict[str, HourlyStepModelData],
+    architecture_key: str,
+    model_family: str,
+    pooling_mode: str,
+    covariate_mode: str,
+    mask_id: str,
+    stage_configs: list[GlobalSearchStageConfig],
+    global_seed: int,
+    source_fit_identity: str,
+    smoother_method: str,
+    backward_smoother_particles: int,
+    backward_smoother_trajectories: int,
+    backward_smoother_seed: int,
+) -> dict[str, object]:
+    if str(smoother_method) != "backward_particle":
+        raise ValueError(f"Unsupported smoother_method for v1 smoother stage: {smoother_method!r}")
+    architecture = ARCHITECTURE_SPEC_LOOKUP[architecture_key]
+    # Always replay from participant_estimates (not shared_estimates) so each
+    # participant uses the exact fitted vector produced by the masked fit stage.
+    participant_estimates = masked_fit_artifact.get("participant_estimates", pd.DataFrame())
+    if participant_estimates is None or participant_estimates.empty:
+        raise ValueError("Cannot build smoother artifact: masked fit participant_estimates are empty.")
+    participant_id_column = _participant_estimate_lookup_column(participant_estimates)
+    if participant_id_column is None:
+        raise ValueError("Cannot build smoother artifact: participant_estimates missing participant identifier column.")
+
+    filtered_hourly_frames: list[pd.DataFrame] = []
+    smoothed_hourly_frames: list[pd.DataFrame] = []
+    filtered_reward_frames: list[pd.DataFrame] = []
+    smoothed_reward_frames: list[pd.DataFrame] = []
+    smoothed_imputation_frames: list[pd.DataFrame] = []
+    smoother_summary_frames: list[pd.DataFrame] = []
+    timing_rows: list[dict[str, object]] = []
+    run_status_rows: list[dict[str, object]] = []
+
+    for participant_id in sorted(data_by_participant):
+        estimate_row = participant_estimates.loc[
+            participant_estimates[participant_id_column].astype(str) == str(participant_id)
+        ]
+        if estimate_row.empty:
+            run_status_rows.append(
+                {
+                    "participant_id": str(participant_id),
+                    "status": "missing_participant_estimate",
+                }
+            )
+            continue
+        participant_params = _participant_params_from_estimate_row(estimate_row.iloc[0])
+        if not participant_params:
+            run_status_rows.append(
+                {
+                    "participant_id": str(participant_id),
+                    "status": "missing_numeric_parameters",
+                }
+            )
+            continue
+        participant_data = data_by_participant[str(participant_id)]
+        participant_seed = _stable_participant_seed(int(backward_smoother_seed), str(participant_id))
+        run_start = perf_counter()
+        # Replay uses masked inputs only; held-out truth columns remain in the frame
+        # for post-hoc benchmarking and are never used as observations.
+        run_result = run_step_pomp_if2(
+            participant_data,
+            initial_params=participant_params,
+            free_params=[],
+            particles=int(stage_configs[-1].evaluation_particles),
+            mif_iterations=0,
+            random_seed=participant_seed,
+            cooling_fraction=float(stage_configs[-1].cooling_fraction),
+            rw_sd_scale=float(stage_configs[-1].rw_sd_scale),
+            simulation_count=1,
+            pfilter_reps=int(stage_configs[-1].evaluation_pfilter_reps),
+            backward_smoother_particles=int(backward_smoother_particles),
+            backward_smoother_trajectories=int(backward_smoother_trajectories),
+            backward_smoother_seed=participant_seed,
+            backward_smoother_enabled=True,
+            evaluation_particles=int(stage_configs[-1].evaluation_particles),
+            evaluation_pfilter_reps=int(stage_configs[-1].evaluation_pfilter_reps),
+            ar_order=int(architecture.ar_order),
+            seasonal_lag_hours=int(getattr(architecture, "seasonal_lag_hours", 0)),
+            missingness_mode=str(getattr(architecture, "missingness_mode", "standard")),
+        )
+        runtime_seconds = float(perf_counter() - run_start)
+        timing_rows.append(
+            {
+                "participant_id": str(participant_id),
+                "step": "smoother_postfit_replay",
+                "seconds": runtime_seconds,
+            }
+        )
+        runtime_breakdown = run_result.runtime_breakdown.copy()
+        if not runtime_breakdown.empty and {"step", "seconds"}.issubset(runtime_breakdown.columns):
+            for runtime_row in runtime_breakdown.itertuples(index=False):
+                timing_rows.append(
+                    {
+                        "participant_id": str(participant_id),
+                        "step": f"smoother_{str(getattr(runtime_row, 'step'))}",
+                        "seconds": float(getattr(runtime_row, "seconds")),
+                    }
+                )
+
+        smoother_summary = run_result.backward_smoother_summary.copy()
+        smoother_summary["participant_id"] = str(participant_id)
+        method_series = smoother_summary.get("method", pd.Series(dtype=str)).astype(str).str.lower()
+        # v1 aggregate smoothing surfaces only backward-particle smoother output.
+        if method_series.empty or (~method_series.eq("backward_particle_smoother")).any():
+            raise ValueError(
+                "Backward smoother artifact requested only backward-particle outputs, "
+                f"but participant {participant_id} returned method(s) {method_series.tolist()}."
+            )
+        smoother_summary_frames.append(smoother_summary)
+
+        filtered_hourly = _prediction_table_from_frames(
+            run_result.plot_frame,
+            run_result.reward_frame,
+            participant_id=str(participant_id),
+            model_family=model_family,
+            pooling_mode=pooling_mode,
+            covariate_mode=covariate_mode,
+            mask_id=mask_id,
+            predicted_observed_column="fitbit_steps_obs_fitted",
+            predicted_latent_column="latent_fitbit_scale_steps",
+        )
+        filtered_reward = _reward_table_from_frames(
+            run_result.reward_frame,
+            participant_id=str(participant_id),
+            model_family=model_family,
+            pooling_mode=pooling_mode,
+            mask_id=mask_id,
+            predicted_latent_reward_column="latent_reward_24h",
+        )
+        filtered_reward = filtered_reward.merge(
+            _compute_masked_hour_counts(run_result.plot_frame, run_result.reward_frame),
+            how="left",
+            on="decision_id",
+        )
+        filtered_reward["artificially_masked_hours"] = pd.to_numeric(
+            filtered_reward.get("artificially_masked_hours_y"), errors="coerce"
+        ).fillna(
+            pd.to_numeric(filtered_reward.get("artificially_masked_hours_x"), errors="coerce")
+        ).fillna(0).astype(int)
+
+        smoothed_hourly = _prediction_table_from_frames(
+            run_result.backward_smoothed_frame,
+            run_result.backward_smoothed_reward_frame,
+            participant_id=str(participant_id),
+            model_family=model_family,
+            pooling_mode=pooling_mode,
+            covariate_mode=covariate_mode,
+            mask_id=mask_id,
+            predicted_observed_column="fitbit_steps_obs_fitted_backward",
+            predicted_latent_column="latent_fitbit_scale_steps_backward",
+        )
+        smoothed_reward = _reward_table_from_frames(
+            run_result.backward_smoothed_reward_frame,
+            participant_id=str(participant_id),
+            model_family=model_family,
+            pooling_mode=pooling_mode,
+            mask_id=mask_id,
+            predicted_latent_reward_column="latent_reward_24h",
+        )
+        smoothed_reward = smoothed_reward.merge(
+            _compute_masked_hour_counts(run_result.backward_smoothed_frame, run_result.backward_smoothed_reward_frame),
+            how="left",
+            on="decision_id",
+        )
+        smoothed_reward["artificially_masked_hours"] = pd.to_numeric(
+            smoothed_reward.get("artificially_masked_hours_y"), errors="coerce"
+        ).fillna(
+            pd.to_numeric(smoothed_reward.get("artificially_masked_hours_x"), errors="coerce")
+        ).fillna(0).astype(int)
+
+        smoothed_imputation = run_result.backward_smoothed_imputation_frame.copy()
+        smoothed_imputation["participant_id"] = str(participant_id)
+        smoothed_imputation["model_family"] = str(model_family)
+        smoothed_imputation["pooling_mode"] = str(pooling_mode)
+        smoothed_imputation["mask_id"] = str(mask_id)
+
+        filtered_hourly_frames.append(filtered_hourly)
+        smoothed_hourly_frames.append(smoothed_hourly)
+        filtered_reward_frames.append(filtered_reward)
+        smoothed_reward_frames.append(smoothed_reward)
+        smoothed_imputation_frames.append(smoothed_imputation)
+        run_status_rows.append(
+            {
+                "participant_id": str(participant_id),
+                "status": "done",
+                "runtime_seconds": runtime_seconds,
+            }
+        )
+
+    return {
+        "kind": "smoother",
+        "schema_version": SMOOTHER_TASK_CACHE_SCHEMA_VERSION,
+        "source_fit_identity": str(source_fit_identity),
+        "model_family": str(model_family),
+        "pooling_mode": str(pooling_mode),
+        "mask_id": str(mask_id),
+        "smoother_method": str(smoother_method),
+        "backward_smoother_particles": int(backward_smoother_particles),
+        "backward_smoother_trajectories": int(backward_smoother_trajectories),
+        "backward_smoother_seed": int(backward_smoother_seed),
+        "participant_estimates_snapshot": participant_estimates.copy(),
+        "hourly_filtered_frame": pd.concat(filtered_hourly_frames, ignore_index=True) if filtered_hourly_frames else pd.DataFrame(),
+        "hourly_smoothed_frame": pd.concat(smoothed_hourly_frames, ignore_index=True) if smoothed_hourly_frames else pd.DataFrame(),
+        "reward_filtered_frame": pd.concat(filtered_reward_frames, ignore_index=True) if filtered_reward_frames else pd.DataFrame(),
+        "reward_smoothed_frame": pd.concat(smoothed_reward_frames, ignore_index=True) if smoothed_reward_frames else pd.DataFrame(),
+        "imputation_smoothed_frame": pd.concat(smoothed_imputation_frames, ignore_index=True) if smoothed_imputation_frames else pd.DataFrame(),
+        "backward_smoother_summary": pd.concat(smoother_summary_frames, ignore_index=True) if smoother_summary_frames else pd.DataFrame(),
+        "timing_frame": pd.DataFrame(timing_rows),
+        "participant_run_status": pd.DataFrame(run_status_rows),
+    }
+
+
 def _core_masking_benchmark_from_fit_artifact(
     fit_artifact: dict[str, object],
     *,
@@ -1165,10 +1537,11 @@ def _core_masking_benchmark_from_fit_artifact(
     pooling_mode: str,
     mask_id: str,
     benchmark_spec: BenchmarkSpec,
+    smoother_artifact: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    hourly = fit_artifact["hourly_prediction_frame"].copy()
-    reward = fit_artifact["reward_window_frame"].copy()
-    if hourly.empty:
+    filtered_hourly = fit_artifact["hourly_prediction_frame"].copy()
+    filtered_reward = fit_artifact["reward_window_frame"].copy()
+    if filtered_hourly.empty:
         return {
             "benchmark_key": benchmark_spec.key,
             "benchmark_label": benchmark_spec.label,
@@ -1176,61 +1549,110 @@ def _core_masking_benchmark_from_fit_artifact(
             "daily_subtotal_frame": pd.DataFrame(),
             "summary_frame": pd.DataFrame(),
         }
-    hourly_benchmark = build_masked_hourly_benchmark_frame(
-        hourly,
-        truth_column="fitbit_truth_for_eval",
-        mask_flag_column="fitbit_masked_for_eval",
-        positive_truth_only=True,
-        estimate_columns=["latent_fitbit_scale_steps", "fitbit_steps_obs_fitted"],
-    )
-    daily_subtotal = build_heldout_subtotal_benchmark_frame(
-        hourly,
-        reward,
-        truth_column="fitbit_truth_for_eval",
+
+    def _summarize_estimate_type(
+        *,
+        hourly_frame: pd.DataFrame,
+        reward_frame: pd.DataFrame,
+        estimate_column: str,
+        estimate_type: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        hourly_benchmark = build_masked_hourly_benchmark_frame(
+            hourly_frame,
+            truth_column="fitbit_truth_for_eval",
+            mask_flag_column="fitbit_masked_for_eval",
+            positive_truth_only=True,
+            estimate_columns=[estimate_column],
+        )
+        daily_subtotal = build_heldout_subtotal_benchmark_frame(
+            hourly_frame,
+            reward_frame,
+            truth_column="fitbit_truth_for_eval",
+            estimate_column=estimate_column,
+            mask_flag_column="fitbit_masked_for_eval",
+        )
+        hourly_summary = summarize_masked_hourly_reconstruction(
+            hourly_frame,
+            truth_column="fitbit_truth_for_eval",
+            estimate_column=estimate_column,
+            mask_flag_column="fitbit_masked_for_eval",
+            positive_truth_only=True,
+        )
+        subtotal_summary = summarize_heldout_subtotal_rmse_sqrtm(
+            hourly_frame,
+            reward_frame,
+            truth_column="fitbit_truth_for_eval",
+            estimate_column=estimate_column,
+            mask_flag_column="fitbit_masked_for_eval",
+        )
+        daily_truth = pd.to_numeric(daily_subtotal.get("heldout_true_subtotal"), errors="coerce")
+        daily_estimate = pd.to_numeric(daily_subtotal.get("heldout_predicted_subtotal"), errors="coerce")
+        daily_pair = pd.DataFrame({"truth": daily_truth, "estimate": daily_estimate}).dropna()
+        daily_correlation = (
+            float(daily_pair["truth"].corr(daily_pair["estimate"])) if len(daily_pair) >= 2 else np.nan
+        )
+        summary = pd.DataFrame(
+            [
+                {
+                    "benchmark_key": str(benchmark_spec.key),
+                    "benchmark_label": str(benchmark_spec.label),
+                    "benchmark_version": str(benchmark_spec.version),
+                    "model_family": str(model_family),
+                    "pooling_mode": str(pooling_mode),
+                    "mask_id": str(mask_id),
+                    "estimate_type": str(estimate_type),
+                    "hourly_masked_rmse": float(pd.to_numeric(hourly_summary["rmse"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
+                    "hourly_masked_mae": float(pd.to_numeric(hourly_summary["mae"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
+                    "hourly_masked_correlation": float(pd.to_numeric(hourly_summary["correlation"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
+                    "daily_correlation": daily_correlation,
+                    "heldout_subtotal_rmse_sqrtm": float(pd.to_numeric(subtotal_summary["rmse_sqrtm"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
+                    "mean_signed_subtotal_error": float(pd.to_numeric(subtotal_summary["mean_signed_subtotal_error"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
+                    "mean_signed_normalized_subtotal_error": float(pd.to_numeric(subtotal_summary["mean_signed_normalized_subtotal_error"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
+                    "n_windows_used": int(pd.to_numeric(subtotal_summary["n_windows_used"], errors="coerce").fillna(0).iloc[0]) if not subtotal_summary.empty else 0,
+                    "mean_masked_hours": float(pd.to_numeric(subtotal_summary["mean_masked_hours"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
+                }
+            ]
+        )
+        hourly_benchmark["estimate_type"] = str(estimate_type)
+        daily_subtotal["estimate_type"] = str(estimate_type)
+        return hourly_benchmark, daily_subtotal, summary
+
+    # Smoother benchmarks are additive rows (`estimate_type`) and never replace
+    # the filtered baseline rows.
+    hourly_frames: list[pd.DataFrame] = []
+    daily_frames: list[pd.DataFrame] = []
+    summary_frames: list[pd.DataFrame] = []
+    filtered_hourly_benchmark, filtered_daily_subtotal, filtered_summary = _summarize_estimate_type(
+        hourly_frame=filtered_hourly,
+        reward_frame=filtered_reward,
         estimate_column="latent_fitbit_scale_steps",
-        mask_flag_column="fitbit_masked_for_eval",
+        estimate_type="filter",
     )
-    hourly_summary = summarize_masked_hourly_reconstruction(
-        hourly,
-        truth_column="fitbit_truth_for_eval",
-        estimate_column="latent_fitbit_scale_steps",
-        mask_flag_column="fitbit_masked_for_eval",
-        positive_truth_only=True,
-    )
-    subtotal_summary = summarize_heldout_subtotal_rmse_sqrtm(
-        hourly,
-        reward,
-        truth_column="fitbit_truth_for_eval",
-        estimate_column="latent_fitbit_scale_steps",
-        mask_flag_column="fitbit_masked_for_eval",
-    )
-    summary = pd.DataFrame(
-        [
-            {
-                "benchmark_key": str(benchmark_spec.key),
-                "benchmark_label": str(benchmark_spec.label),
-                "benchmark_version": str(benchmark_spec.version),
-                "model_family": str(model_family),
-                "pooling_mode": str(pooling_mode),
-                "mask_id": str(mask_id),
-                "hourly_masked_rmse": float(pd.to_numeric(hourly_summary["rmse"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
-                "hourly_masked_mae": float(pd.to_numeric(hourly_summary["mae"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
-                "hourly_masked_correlation": float(pd.to_numeric(hourly_summary["correlation"], errors="coerce").iloc[0]) if not hourly_summary.empty else np.nan,
-                "heldout_subtotal_rmse_sqrtm": float(pd.to_numeric(subtotal_summary["rmse_sqrtm"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
-                "mean_signed_subtotal_error": float(pd.to_numeric(subtotal_summary["mean_signed_subtotal_error"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
-                "mean_signed_normalized_subtotal_error": float(pd.to_numeric(subtotal_summary["mean_signed_normalized_subtotal_error"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
-                "n_windows_used": int(pd.to_numeric(subtotal_summary["n_windows_used"], errors="coerce").fillna(0).iloc[0]) if not subtotal_summary.empty else 0,
-                "mean_masked_hours": float(pd.to_numeric(subtotal_summary["mean_masked_hours"], errors="coerce").iloc[0]) if not subtotal_summary.empty else np.nan,
-            }
-        ]
-    )
+    hourly_frames.append(filtered_hourly_benchmark)
+    daily_frames.append(filtered_daily_subtotal)
+    summary_frames.append(filtered_summary)
+
+    if smoother_artifact is not None:
+        smoothed_hourly = smoother_artifact.get("hourly_smoothed_frame", pd.DataFrame()).copy()
+        smoothed_reward = smoother_artifact.get("reward_smoothed_frame", pd.DataFrame()).copy()
+        if not smoothed_hourly.empty and "latent_fitbit_scale_steps_backward" in smoothed_hourly.columns:
+            smoothed_hourly_benchmark, smoothed_daily_subtotal, smoothed_summary = _summarize_estimate_type(
+                hourly_frame=smoothed_hourly,
+                reward_frame=smoothed_reward,
+                estimate_column="latent_fitbit_scale_steps_backward",
+                estimate_type="smoothed",
+            )
+            hourly_frames.append(smoothed_hourly_benchmark)
+            daily_frames.append(smoothed_daily_subtotal)
+            summary_frames.append(smoothed_summary)
+
     return {
         "benchmark_key": benchmark_spec.key,
         "benchmark_label": benchmark_spec.label,
         "benchmark_version": benchmark_spec.version,
-        "hourly_benchmark_frame": hourly_benchmark,
-        "daily_subtotal_frame": daily_subtotal,
-        "summary_frame": summary,
+        "hourly_benchmark_frame": pd.concat(hourly_frames, ignore_index=True) if hourly_frames else pd.DataFrame(),
+        "daily_subtotal_frame": pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame(),
+        "summary_frame": pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame(),
     }
 
 
@@ -1241,6 +1663,7 @@ def benchmark_from_fit_artifact(
     pooling_mode: str,
     mask_id: str,
     benchmark_spec: BenchmarkSpec,
+    smoother_artifact: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if benchmark_spec.key == "core_masking":
         return _core_masking_benchmark_from_fit_artifact(
@@ -1249,6 +1672,7 @@ def benchmark_from_fit_artifact(
             pooling_mode=pooling_mode,
             mask_id=mask_id,
             benchmark_spec=benchmark_spec,
+            smoother_artifact=smoother_artifact,
         )
     raise ValueError(f"Unknown benchmark spec: {benchmark_spec.key}")
 
@@ -1285,6 +1709,48 @@ def _artifact_ready(paths: dict[str, Path], force_recompute: bool) -> bool:
     return paths["pickle"].exists() and paths["meta"].exists()
 
 
+def _load_masked_fit_by_metadata(
+    cache_root: Path,
+    *,
+    model_family: str,
+    pooling_mode: str,
+    mask_id: str,
+) -> dict[str, object] | None:
+    masked_root = cache_root / "fits" / "masked"
+    if not masked_root.exists():
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for artifact_dir in masked_root.iterdir():
+        if not artifact_dir.is_dir():
+            continue
+        meta_path = artifact_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(meta.get("model_family")) != str(model_family):
+            continue
+        if str(meta.get("pooling_mode")) != str(pooling_mode):
+            continue
+        if str(meta.get("mask_id")) != str(mask_id):
+            continue
+        candidates.append((int(meta_path.stat().st_mtime_ns), str(artifact_dir.name)))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    selected_identity = candidates[0][1]
+    artifact = _load_artifact(cache_root, "fits/masked", selected_identity)
+    return {
+        "identity": selected_identity,
+        "artifact": artifact,
+        "n_candidates": int(len(candidates)),
+    }
+
+
 def _active_benchmark_specs(resolved_config: dict[str, object]) -> list[BenchmarkSpec]:
     raw = resolved_config.get("benchmark_keys")
     if raw is None:
@@ -1308,7 +1774,7 @@ def _aggregate_benchmark_summary(benchmark_summary: pd.DataFrame) -> pd.DataFram
         return pd.DataFrame()
     id_columns = [
         column
-        for column in ["benchmark_key", "benchmark_label", "model_family", "pooling_mode"]
+        for column in ["benchmark_key", "benchmark_label", "model_family", "pooling_mode", "estimate_type"]
         if column in benchmark_summary.columns
     ]
     numeric_columns = [
@@ -1400,6 +1866,7 @@ def build_task_manifest(
     active_pooling_modes: list[str],
     mask_ids: list[str],
     benchmark_specs: list[BenchmarkSpec],
+    smoother_scope: str,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     fit_scope = str(resolved_config["fit_scope"])
@@ -1420,7 +1887,7 @@ def build_task_manifest(
                         "runtime_seconds": np.nan,
                     }
                 )
-            if fit_scope in {"masked_only", "both"}:
+            if fit_scope in {"masked_only", "both", "benchmarks_from_cache_only"}:
                 for mask_id in mask_ids:
                     rows.append(
                         {
@@ -1436,6 +1903,21 @@ def build_task_manifest(
                             "runtime_seconds": np.nan,
                         }
                     )
+                    if str(smoother_scope) != "none":
+                        rows.append(
+                            {
+                                "task_id": f"smoother::{model_family}::{pooling_mode}::{mask_id}",
+                                "artifact_type": "smoother",
+                                "participant_set": resolved_config["participant_set"],
+                                "model_family": model_family,
+                                "pooling_mode": pooling_mode,
+                                "covariate_mode": resolved_config["covariate_mode"],
+                                "masked": True,
+                                "mask_replicate": mask_id,
+                                "status": "needs_run",
+                                "runtime_seconds": np.nan,
+                            }
+                        )
                     for benchmark_spec in benchmark_specs:
                         rows.append(
                             {
@@ -1481,11 +1963,15 @@ def run_cache_first_pipeline(
 ) -> AggregatePipelineResult:
     force_recompute = str(resolved_config["cache_mode"]) == "force_recompute"
     fit_scope = str(resolved_config["fit_scope"])
+    smoother_scope = _normalize_smoother_scope(resolved_config.get("smoother_scope", "none"))
+    smoother_method = _normalize_smoother_method(resolved_config.get("smoother_method", "backward_particle"))
     # Benchmark-only reruns should still derive new benchmark artifacts from saved masked fits.
     allow_fit_compute = fit_scope != "benchmarks_from_cache_only"
     allow_benchmark_compute = True
+    allow_smoother_compute = smoother_scope == "compute_missing_only"
     need_unmasked = fit_scope in {"unmasked_only", "both", "benchmarks_from_cache_only"}
     need_masked = fit_scope in {"masked_only", "both", "benchmarks_from_cache_only"}
+    need_smoother = smoother_scope != "none"
     if progress_callback is None:
         progress_callback = lambda _message: None
 
@@ -1511,6 +1997,7 @@ def run_cache_first_pipeline(
         active_pooling_modes=active_pooling_modes,
         mask_ids=mask_ids,
         benchmark_specs=benchmark_specs,
+        smoother_scope=smoother_scope,
     )
     task_rows = task_manifest.to_dict("records")
     timing_rows: list[dict[str, object]] = []
@@ -1561,6 +2048,8 @@ def run_cache_first_pipeline(
         model_families=list(active_model_families),
         pooling_modes=list(active_pooling_modes),
         fit_scope=fit_scope,
+        smoother_scope=smoother_scope,
+        smoother_method=smoother_method,
     )
 
     cohort_frame = base_artifact["cohort_frame"].copy()
@@ -1570,9 +2059,17 @@ def run_cache_first_pipeline(
     assumed_timezone = str(resolved_config["assumed_local_timezone"])
     stage_configs = [GlobalSearchStageConfig(**row) for row in resolved_config["search_stage_settings"]]
     search_windows = resolved_config["search_windows"]
+    default_backward_particles = int(stage_configs[-1].evaluation_particles) if stage_configs else 200
+    backward_smoother_particles = int(
+        resolved_config.get("backward_smoother_particles", default_backward_particles)
+    )
+    backward_smoother_trajectories = int(resolved_config.get("backward_smoother_trajectories", 80))
+    backward_smoother_seed = int(
+        resolved_config.get("backward_smoother_seed", int(resolved_config["global_seed"]) + 70_000)
+    )
 
     mask_payloads: dict[str, dict[str, object]] = {}
-    if need_masked and allow_fit_compute:
+    if need_masked and (allow_fit_compute or (need_smoother and allow_smoother_compute)):
         for replicate_index, mask_id in enumerate(mask_ids):
             identity = _sha_identity(
                 {
@@ -1619,6 +2116,7 @@ def run_cache_first_pipeline(
 
     unmasked_fits: dict[tuple[str, str], dict[str, object]] = {}
     masked_fits: dict[tuple[str, str, str], dict[str, object]] = {}
+    smoother_artifacts: dict[tuple[str, str, str], dict[str, object]] = {}
     benchmark_artifacts: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
     for model_family in active_model_families:
@@ -1769,6 +2267,29 @@ def run_cache_first_pipeline(
                             artifact_type="masked_fit",
                             status="cached",
                         )
+                    elif not allow_fit_compute:
+                        fallback = _load_masked_fit_by_metadata(
+                            cache_paths["root"],
+                            model_family=model_family,
+                            pooling_mode=str(pooling_mode),
+                            mask_id=str(mask_id),
+                        )
+                        if fallback is not None:
+                            identity = str(fallback["identity"])
+                            artifact = fallback["artifact"]
+                            masked_fits[(model_family, pooling_mode, mask_id)] = artifact
+                            update_task_status(masked_task_id, "cached")
+                            emit_progress(
+                                f"Using metadata-matched masked fit for {model_family} / {pooling_mode} / {mask_id}",
+                                task_id=masked_task_id,
+                                model_family=model_family,
+                                pooling_mode=pooling_mode,
+                                mask_id=mask_id,
+                                artifact_type="masked_fit",
+                                status="cached",
+                                fit_identity=identity,
+                                candidate_count=int(fallback["n_candidates"]),
+                            )
                     elif allow_fit_compute and mask_payload is not None:
                         task_start = perf_counter()
                         update_task_status(masked_task_id, "running")
@@ -1866,6 +2387,179 @@ def run_cache_first_pipeline(
                             runtime_seconds=total_runtime,
                         )
 
+                    smoother_task_id = f"smoother::{model_family}::{pooling_mode}::{mask_id}"
+                    smoother_identity: str | None = None
+                    smoother_key = (model_family, pooling_mode, mask_id)
+                    if need_smoother:
+                        supported_smoother, smoother_support_reason = _smoother_supported_for_configuration(
+                            model_family=model_family,
+                            pooling_mode=str(pooling_mode),
+                            architecture_key=architecture_key,
+                        )
+                        if not supported_smoother:
+                            update_task_status(smoother_task_id, "unsupported")
+                            emit_progress(
+                                (
+                                    "Skipping smoother for unsupported configuration "
+                                    f"{model_family} / {pooling_mode} / {mask_id}: {smoother_support_reason}"
+                                ),
+                                task_id=smoother_task_id,
+                                model_family=model_family,
+                                pooling_mode=pooling_mode,
+                                mask_id=mask_id,
+                                artifact_type="smoother",
+                                status="unsupported",
+                                reason=smoother_support_reason,
+                            )
+                        elif smoother_key not in masked_fits:
+                            update_task_status(smoother_task_id, "skipped_missing_fit_cache")
+                            emit_progress(
+                                f"Skipping smoother for {model_family} / {pooling_mode} / {mask_id} because masked fit cache is missing",
+                                task_id=smoother_task_id,
+                                model_family=model_family,
+                                pooling_mode=pooling_mode,
+                                mask_id=mask_id,
+                                artifact_type="smoother",
+                                status="skipped_missing_fit_cache",
+                            )
+                        else:
+                            smoother_identity = _smoother_identity(
+                                source_fit_identity=identity,
+                                model_family=model_family,
+                                pooling_mode=str(pooling_mode),
+                                mask_id=mask_id,
+                                smoother_method=smoother_method,
+                                backward_smoother_particles=backward_smoother_particles,
+                                backward_smoother_trajectories=backward_smoother_trajectories,
+                                backward_smoother_seed=backward_smoother_seed,
+                            )
+                            smoother_paths = _artifact_paths(cache_paths["root"], "smoothers", smoother_identity)
+                            if _artifact_ready(smoother_paths, force_recompute):
+                                smoother_artifacts[smoother_key] = _load_artifact(
+                                    cache_paths["root"],
+                                    "smoothers",
+                                    smoother_identity,
+                                )
+                                update_task_status(smoother_task_id, "cached")
+                                emit_progress(
+                                    f"Using cached smoother for {model_family} / {pooling_mode} / {mask_id}",
+                                    task_id=smoother_task_id,
+                                    model_family=model_family,
+                                    pooling_mode=pooling_mode,
+                                    mask_id=mask_id,
+                                    artifact_type="smoother",
+                                    status="cached",
+                                )
+                            elif not allow_smoother_compute:
+                                update_task_status(smoother_task_id, "skipped_missing_fit_cache")
+                                emit_progress(
+                                    f"Skipping smoother compute for {model_family} / {pooling_mode} / {mask_id} (smoother_scope={smoother_scope})",
+                                    task_id=smoother_task_id,
+                                    model_family=model_family,
+                                    pooling_mode=pooling_mode,
+                                    mask_id=mask_id,
+                                    artifact_type="smoother",
+                                    status="skipped_missing_fit_cache",
+                                )
+                            else:
+                                smoother_task_start = perf_counter()
+                                update_task_status(smoother_task_id, "running")
+                                emit_progress(
+                                    f"Running smoother for {model_family} / {pooling_mode} / {mask_id}",
+                                    task_id=smoother_task_id,
+                                    model_family=model_family,
+                                    pooling_mode=pooling_mode,
+                                    mask_id=mask_id,
+                                    artifact_type="smoother",
+                                    status="running",
+                                )
+                                if mask_payload is None:
+                                    masked_frame, mask_summary = make_masked_cohort_frame(
+                                        cohort_frame,
+                                        participant_ids=participant_ids,
+                                        mask_regime=str(resolved_config["mask_regime"]),
+                                        missing_fraction=float(resolved_config["missing_fraction"]),
+                                        mask_seed=int(resolved_config["mask_seed"]),
+                                        replicate_index=replicate_index,
+                                    )
+                                    mask_payload = {
+                                        "mask_id": mask_id,
+                                        "masked_cohort_frame": masked_frame,
+                                        "mask_summary": mask_summary,
+                                    }
+                                smoother_data_by_participant = build_data_map(mask_payload["masked_cohort_frame"])
+                                try:
+                                    smoother_artifact = build_backward_smoother_artifact_from_masked_fit(
+                                        masked_fits[smoother_key],
+                                        data_by_participant=smoother_data_by_participant,
+                                        architecture_key=architecture_key,
+                                        model_family=model_family,
+                                        pooling_mode=str(pooling_mode),
+                                        covariate_mode=str(resolved_config["covariate_mode"]),
+                                        mask_id=mask_id,
+                                        stage_configs=stage_configs,
+                                        global_seed=int(resolved_config["global_seed"]),
+                                        source_fit_identity=identity,
+                                        smoother_method=smoother_method,
+                                        backward_smoother_particles=backward_smoother_particles,
+                                        backward_smoother_trajectories=backward_smoother_trajectories,
+                                        backward_smoother_seed=backward_smoother_seed,
+                                    )
+                                except Exception as smoother_exc:
+                                    update_task_status(smoother_task_id, "failed")
+                                    emit_progress(
+                                        f"Failed smoother for {model_family} / {pooling_mode} / {mask_id}: {smoother_exc}",
+                                        task_id=smoother_task_id,
+                                        model_family=model_family,
+                                        pooling_mode=pooling_mode,
+                                        mask_id=mask_id,
+                                        artifact_type="smoother",
+                                        status="failed",
+                                    )
+                                    smoother_artifact = None
+                                if smoother_artifact is not None:
+                                    smoother_runtime = float(perf_counter() - smoother_task_start)
+                                    timing_rows.append(
+                                        {
+                                            "task_id": smoother_task_id,
+                                            "model_family": model_family,
+                                            "pooling_mode": pooling_mode,
+                                            "mask_id": mask_id,
+                                            "artifact_type": "smoother",
+                                            "runtime_seconds": smoother_runtime,
+                                        }
+                                    )
+                                    _save_artifact(
+                                        cache_paths["root"],
+                                        "smoothers",
+                                        smoother_identity,
+                                        smoother_artifact,
+                                        {
+                                            "source_fit_identity": identity,
+                                            "model_family": model_family,
+                                            "pooling_mode": pooling_mode,
+                                            "mask_id": mask_id,
+                                            "smoother_method": smoother_method,
+                                            "backward_smoother_particles": backward_smoother_particles,
+                                            "backward_smoother_trajectories": backward_smoother_trajectories,
+                                            "backward_smoother_seed": backward_smoother_seed,
+                                            "runtime_seconds": smoother_runtime,
+                                            "schema_version": SMOOTHER_TASK_CACHE_SCHEMA_VERSION,
+                                        },
+                                    )
+                                    smoother_artifacts[smoother_key] = smoother_artifact
+                                    update_task_status(smoother_task_id, "done", runtime_seconds=smoother_runtime)
+                                    emit_progress(
+                                        f"Finished smoother for {model_family} / {pooling_mode} / {mask_id}",
+                                        task_id=smoother_task_id,
+                                        model_family=model_family,
+                                        pooling_mode=pooling_mode,
+                                        mask_id=mask_id,
+                                        artifact_type="smoother",
+                                        status="done",
+                                        runtime_seconds=smoother_runtime,
+                                    )
+
                     for benchmark_spec in benchmark_specs:
                         benchmark_task_id = f"benchmark::{benchmark_spec.key}::{model_family}::{pooling_mode}::{mask_id}"
                         benchmark_identity = _benchmark_identity(
@@ -1875,6 +2569,9 @@ def run_cache_first_pipeline(
                             mask_id=mask_id,
                             benchmark_key=benchmark_spec.key,
                             benchmark_version=benchmark_spec.version,
+                            smoother_identity=smoother_identity
+                            if smoother_identity is not None and smoother_key in smoother_artifacts
+                            else None,
                         )
                         benchmark_paths = _artifact_paths(cache_paths["root"], "benchmarks", benchmark_identity)
                         benchmark_key = (model_family, pooling_mode, mask_id, benchmark_spec.key)
@@ -1911,6 +2608,7 @@ def run_cache_first_pipeline(
                                 pooling_mode=str(pooling_mode),
                                 mask_id=mask_id,
                                 benchmark_spec=benchmark_spec,
+                                smoother_artifact=smoother_artifacts.get((model_family, pooling_mode, mask_id)),
                             )
                             _save_artifact(
                                 cache_paths["root"],
@@ -1925,6 +2623,9 @@ def run_cache_first_pipeline(
                                     "mask_id": mask_id,
                                     "pooling_mode": pooling_mode,
                                     "masked_fit_identity": identity,
+                                    "smoother_identity": smoother_identity
+                                    if smoother_identity is not None and smoother_key in smoother_artifacts
+                                    else None,
                                     "schema_version": AGGREGATE_TASK_CACHE_SCHEMA_VERSION,
                                 },
                             )
@@ -1971,6 +2672,7 @@ def run_cache_first_pipeline(
         "timing_summary": timing_summary,
         "unmasked_fits": unmasked_fits,
         "masked_fits": masked_fits,
+        "smoother_artifacts": smoother_artifacts,
         "benchmark_artifacts": benchmark_artifacts,
         "benchmark_specs": [spec.key for spec in benchmark_specs],
         "participant_ids": participant_ids,
@@ -2001,17 +2703,21 @@ def run_cache_first_pipeline(
         artifact_type = str(row["artifact_type"])
         task_key_unmasked = (str(row["model_family"]), str(row["pooling_mode"]))
         task_key_masked = (str(row["model_family"]), str(row["pooling_mode"]), str(row["mask_replicate"]))
+        task_key_smoother = (str(row["model_family"]), str(row["pooling_mode"]), str(row["mask_replicate"]))
         task_key_benchmark = (
             str(row["model_family"]),
             str(row["pooling_mode"]),
             str(row["mask_replicate"]),
             str(row.get("benchmark_key")),
         )
-        if str(row.get("status")) == "cached":
+        current_status = str(row.get("status"))
+        if current_status not in {"needs_run", "running"}:
             continue
         if artifact_type == "unmasked_fit" and task_key_unmasked in unmasked_fits:
             row["status"] = "done"
         elif artifact_type == "masked_fit" and task_key_masked in masked_fits:
+            row["status"] = "done"
+        elif artifact_type == "smoother" and task_key_smoother in smoother_artifacts:
             row["status"] = "done"
         elif artifact_type == "benchmark" and task_key_benchmark in benchmark_artifacts:
             row["status"] = "done"

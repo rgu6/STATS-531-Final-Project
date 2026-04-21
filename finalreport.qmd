@@ -44,7 +44,7 @@ goal: maximize step count which is the reward (I think?)
 
 For a new medical school graduate, the first year of residency is demanding and stressful. The yearly Intern Health Study (IHS) aims to study the effect of stress on mental health outcomes, enrolling over a thousand new interns each year. @internhealthstudy The study collects large amounts of data on interns, such as quarterly psychological surveys, DNA samples, daily mood scores, and sleep and physical activity data from wearable devices. In this project, we focus only on physical activity measured by step count, in the 2024 IHS.
 
-In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the "reward" for a given day is the number of steps a user takes in the 24 hours after the 3pm decision point in local time.
+In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the "reward" for a given day is the number of steps a user takes in the 24 hours after the 3pm decision point in local time. These rewards are not needed at decision time for the RL models, but can be backfilled and trained on later, even months later potentially.
 
 <!-- 
 RoME is a robust contextual bandit method for health apps that decides when to send notifications and how to personalize interventions based on the user’s current situation. @RoME
@@ -68,11 +68,9 @@ Peer review comments - more diagnostic plots, like looking at likelihood anomali
 No description of time zone handling
 -->
 
-Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about predicting step count in the next 24 hours following a motivating message.
+Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about predicting step count in the next 24 hours following a motivating message sent to study participants.
 
 Both projects face the same issue of missing data. The HRV project pooled all participants together into a population-level daily summary, taking the median measurement of each day. While we initally designed Partially Observed Markov Process (POMP) models for individual participants, we also incorporated global and partial pooling to jointly learn measurement dispersion parameters across participants in a highly compute-intensive, high parameter "panel pomp". In our search, we didn't find any projects which focused on prediction of missing data, nor which implemented a panel pomp. Because of this, we focused less on model diagnostics and scientific questions answered by inference, instead performing model selection by predictive ability, using predictions on masked data.
-
-[After reading past peer reviews, we made sure to add more diagnostic plots, including those describing likelihood anomalies and effective sample size.]
 
 ## Research Question
 
@@ -225,19 +223,24 @@ $$
 
 where $H(d)$ denotes the 24 hourly buckets following 3pm local time. Because the reward is defined using the latent counts $N_t$, the model can be used to reconstruct daily rewards even when hourly Fitbit observations are missing.
 
-All 78 participants are jointly fit to personalized models in a "panel". We compare three variations of the model all sharing the AR(1) latent that differ in their measurement distribution, in how the observation-dispersion $k$ is handled: participant-specific $k$ with no pooling, a lobally shared $k$, and a partially pooled $k$. We refer to these as ar1personal, ar1global, and ar1partial respectively. Among the parameters $(\phi, sigma, k)$, $k$ was the most natural candidate for pooling because it governs the measurement dynamics of the Fitbit, which all participants are using.
+All 78 participants are jointly fit to personalized models in a "panel". We compare three variations of the model all sharing the AR(1) latent that differ in their measurement distribution, in how the observation-dispersion $k$ is handled: participant-specific $k_i$ with no pooling, a globally shared $k$, and a partially pooled $k_i$. We refer to these as ar1personal, ar1global, and ar1partial respectively. Among the parameters $(\phi, sigma, k)$, $k$ was the most natural candidate for pooling because it governs the measurement dynamics of the Fitbit, which all participants are using.
 
-In the no-pooling model, each participant has their own $\phi_i$, $\sigma_i$, and $k_i$. Here, the panel main serves as a convenient interface to fit many participant-specific, independent time
+In the no-pooling model, each participant has their own $\phi_i$, $\sigma_i$, and $k_i$. Here, the panel main serves as a convenient interface to fit many participant-specific, independent time series, but there is no information sharing across individuals. By contrast, in the globally pooled model, all participants share a single common value of $k$ learned jointly across all participants. This treatments Fitbit dispersion as a common feature across users.
 
-ith no pooling, global pooling, and partial pooling (we name these models ar1personal, ar1global, and ar1partial respectively). Because $k$ is a dispersion parameter in the measurement model of the Fitbit, of the three parameters, it was the most likely candidate for information to be pooled between participants.
+In partial pooling, each participant still has an individual dispersion parameter $k_i$, but they come from an enforced shared distribution. We set $k$ on a log scale as $\eta_i = \log k_i$, and assume $\eta_i \sim N(\mu_k, \tau_k^2)$. This enters the objective as a penalty:
 
-The global pooling merely sets each participant to learn the same $k$ value for everyone, while $\phi$ and $\sigma$ remain personal to each participant. This is done in pypomp by (explain how this is set in pypomp)
+$$
+\sum \limits_{i = 1}^n
+\ell_i(\phi_i, \sigma_i, e^{\eta_i})
+-\frac{1}{2\tau_k^2}
+\sum \limits_{i = 1}^n(\eta_i - \mu_k)^2
+- n \log \tau_k
+$$
+(check the -n log tau)
 
-The no pooling learns a unique $\phi,$ $k$, and $\sigma$ for each individual. Here, there's no cross-individual learning happening, so the panel only functions as a convenient way to batch many independent time series together.
+So the values of $\log k_i$ are pushed towards the common mean $\mu_k$; when $\tau_k$ is small, the shrinkage is strong and the model approach the global pool regime, while large $\tau_k$ implies weak shrinkage and the model approaches the no-pooling regime. Here, the filtering aims to learn the $\mu_k, \tau_k$ that maximizes this joint objective.
 
-With partial pooling, we use add a penalty in the joint objective function
-
-Three variations to estimate $k$ are considered and benchmarked. 
+Finally, as rewards do not need to be calculated at decision-time, we can use future information, information from events occurring after the decision point, to improve our estimates. This is a smoothing task. So in all, we run these three model variations each with a filter, and a smoother, and evaluate their performance.
 
 # Methodology and Results
 
@@ -842,363 +845,363 @@ paragraph 1: filter for individuals with low missing rates
 #| message: false
 #| echo: false
 
-@lru_cache(maxsize=8)
-def load_participant_hourly_from_csv(
-    participant_id: str,
-    start_iso: str,
-    end_iso: str,
-    lookback_hours: int = 48,
-) -> pd.DataFrame:
-    """Load one participant from the CSV with a short lookback window."""
+# @lru_cache(maxsize=8)
+# def load_participant_hourly_from_csv(
+#     participant_id: str,
+#     start_iso: str,
+#     end_iso: str,
+#     lookback_hours: int = 48,
+# ) -> pd.DataFrame:
+#     """Load one participant from the CSV with a short lookback window."""
 
-    start_utc = pd.Timestamp(start_iso).tz_convert("UTC") - pd.Timedelta(hours=lookback_hours)
-    end_utc = pd.Timestamp(end_iso).tz_convert("UTC")
-    chunks = []
+#     start_utc = pd.Timestamp(start_iso).tz_convert("UTC") - pd.Timedelta(hours=lookback_hours)
+#     end_utc = pd.Timestamp(end_iso).tz_convert("UTC")
+#     chunks = []
 
-    for chunk in pd.read_csv(CSV_PATH, usecols=CSV_COLUMNS, chunksize=250_000):
-        chunk = chunk.loc[chunk["PARTICIPANTIDENTIFIER"] == participant_id].copy()
-        if chunk.empty:
-            continue
+#     for chunk in pd.read_csv(CSV_PATH, usecols=CSV_COLUMNS, chunksize=250_000):
+#         chunk = chunk.loc[chunk["PARTICIPANTIDENTIFIER"] == participant_id].copy()
+#         if chunk.empty:
+#             continue
 
-        chunk["time_utc"] = pd.to_datetime(chunk["time_utc"], utc=True, errors="coerce")
-        chunk = chunk.loc[chunk["time_utc"].between(start_utc, end_utc, inclusive="both")]
-        if chunk.empty:
-            continue
+#         chunk["time_utc"] = pd.to_datetime(chunk["time_utc"], utc=True, errors="coerce")
+#         chunk = chunk.loc[chunk["time_utc"].between(start_utc, end_utc, inclusive="both")]
+#         if chunk.empty:
+#             continue
 
-        chunk["date_utc"] = chunk["time_utc"].dt.date
-        chunk["hour_of_day_utc"] = chunk["time_utc"].dt.hour
-        chunks.append(chunk)
+#         chunk["date_utc"] = chunk["time_utc"].dt.date
+#         chunk["hour_of_day_utc"] = chunk["time_utc"].dt.hour
+#         chunks.append(chunk)
 
-    if not chunks:
-        raise ValueError(f"No hourly rows were found for {participant_id}.")
+#     if not chunks:
+#         raise ValueError(f"No hourly rows were found for {participant_id}.")
 
-    return pd.concat(chunks, ignore_index=True).sort_values("time_utc").reset_index(drop=True)
-
-
-def build_baseline_log_mean(
-    step_proxy: pd.Series,
-    local_hour: pd.Series,
-    local_dayofweek: pd.Series,
-) -> pd.Series:
-    """Empirical hour-of-day and weekday mean structure on the log scale."""
-
-    log_proxy = np.log(step_proxy.clip(lower=0.0) + 1.0)
-    valid = log_proxy.replace([np.inf, -np.inf], np.nan).dropna()
-    global_mean = float(valid.mean()) if not valid.empty else float(np.log(1.0))
-
-    hour_effect = (
-        log_proxy.groupby(local_hour).mean().reindex(range(24), fill_value=np.nan).astype(float) - global_mean
-    )
-    hour_effect = hour_effect.fillna(0.0)
-    hour_effect = hour_effect - float(hour_effect.mean())
-
-    hour_lookup = hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
-    residual = log_proxy.to_numpy(dtype=float) - (global_mean + hour_lookup)
-    residual_series = pd.Series(residual, index=step_proxy.index)
-
-    dow_effect = residual_series.groupby(local_dayofweek).mean().reindex(range(7), fill_value=np.nan).astype(float)
-    dow_effect = dow_effect.fillna(0.0)
-    dow_effect = dow_effect - float(dow_effect.mean())
-
-    baseline = (
-        global_mean
-        + hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
-        + dow_effect.reindex(local_dayofweek.astype(int)).to_numpy(dtype=float)
-    )
-    return pd.Series(baseline, index=step_proxy.index, dtype="float64")
+#     return pd.concat(chunks, ignore_index=True).sort_values("time_utc").reset_index(drop=True)
 
 
-def add_hourly_covariates(frame: pd.DataFrame) -> pd.DataFrame:
-    """Create trailing summaries and message-lag indicators from the CSV."""
+# def build_baseline_log_mean(
+#     step_proxy: pd.Series,
+#     local_hour: pd.Series,
+#     local_dayofweek: pd.Series,
+# ) -> pd.Series:
+#     """Empirical hour-of-day and weekday mean structure on the log scale."""
 
-    result = frame.copy()
-    step_proxy = pd.to_numeric(result["fitbitSteps"], errors="coerce").clip(lower=0.0)
-    sleep_minutes = pd.to_numeric(result.get("fitbitSleepMinutes"), errors="coerce")
-    hr_avg = pd.to_numeric(result.get("fitbitHRAvg"), errors="coerce")
-    mood_score = pd.to_numeric(result.get("moodScore"), errors="coerce")
+#     log_proxy = np.log(step_proxy.clip(lower=0.0) + 1.0)
+#     valid = log_proxy.replace([np.inf, -np.inf], np.nan).dropna()
+#     global_mean = float(valid.mean()) if not valid.empty else float(np.log(1.0))
 
-    hr_fill = float(hr_avg.dropna().median()) if hr_avg.notna().any() else 0.0
-    mood_fill = float(mood_score.dropna().mean()) if mood_score.notna().any() else 0.0
+#     hour_effect = (
+#         log_proxy.groupby(local_hour).mean().reindex(range(24), fill_value=np.nan).astype(float) - global_mean
+#     )
+#     hour_effect = hour_effect.fillna(0.0)
+#     hour_effect = hour_effect - float(hour_effect.mean())
 
-    result["cov_trail_steps_24h"] = step_proxy.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
-    result["cov_trail_sleep_minutes_24h"] = sleep_minutes.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
-    result["cov_trail_hr_mean_24h"] = hr_avg.fillna(hr_fill).shift(1).rolling(24, min_periods=1).mean()
-    result["cov_trail_mood_mean_24h"] = mood_score.fillna(mood_fill).shift(1).rolling(24, min_periods=1).mean()
+#     hour_lookup = hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
+#     residual = log_proxy.to_numpy(dtype=float) - (global_mean + hour_lookup)
+#     residual_series = pd.Series(residual, index=step_proxy.index)
 
-    send_series = pd.to_numeric(result.get("messageSent", 0), errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)
-    hours_since_send = np.full(len(result), np.inf, dtype=float)
-    last_send_index = None
-    for index, sent_flag in enumerate(send_series.to_numpy(dtype=float)):
-        if sent_flag >= 0.5:
-            last_send_index = index
-            hours_since_send[index] = 0.0
-        elif last_send_index is not None:
-            hours_since_send[index] = float(index - last_send_index)
+#     dow_effect = residual_series.groupby(local_dayofweek).mean().reindex(range(7), fill_value=np.nan).astype(float)
+#     dow_effect = dow_effect.fillna(0.0)
+#     dow_effect = dow_effect - float(dow_effect.mean())
 
-    result["cov_send_lag_0_3h"] = ((hours_since_send >= 0) & (hours_since_send <= 3)).astype(float)
-    result["cov_send_lag_4_11h"] = ((hours_since_send >= 4) & (hours_since_send <= 11)).astype(float)
-    result["cov_send_lag_12_23h"] = ((hours_since_send >= 12) & (hours_since_send <= 23)).astype(float)
-    result["baseline_log_mean"] = build_baseline_log_mean(
-        step_proxy,
-        result["local_hour"],
-        result["local_dayofweek"],
-    )
-    return result
+#     baseline = (
+#         global_mean
+#         + hour_effect.reindex(local_hour.astype(int)).to_numpy(dtype=float)
+#         + dow_effect.reindex(local_dayofweek.astype(int)).to_numpy(dtype=float)
+#     )
+#     return pd.Series(baseline, index=step_proxy.index, dtype="float64")
 
 
-def build_decision_windows(frame: pd.DataFrame) -> pd.DataFrame:
-    """Identify local 3pm decision times and their following 24-hour windows."""
+# def add_hourly_covariates(frame: pd.DataFrame) -> pd.DataFrame:
+#     """Create trailing summaries and message-lag indicators from the CSV."""
 
-    decision_rows = frame.loc[frame["local_hour"] == 15].copy()
-    if decision_rows.empty:
-        return pd.DataFrame(
-            columns=[
-                "decision_id",
-                "decision_time_utc",
-                "decision_local_time",
-                "decision_local_date",
-                "hours_in_window",
-                "complete_window",
-                "fitbit_observed_hours",
-                "fitbit_coverage_fraction",
-                "reward_window_status",
-                "window_start_position",
-                "window_end_position",
-            ]
-        )
+#     result = frame.copy()
+#     step_proxy = pd.to_numeric(result["fitbitSteps"], errors="coerce").clip(lower=0.0)
+#     sleep_minutes = pd.to_numeric(result.get("fitbitSleepMinutes"), errors="coerce")
+#     hr_avg = pd.to_numeric(result.get("fitbitHRAvg"), errors="coerce")
+#     mood_score = pd.to_numeric(result.get("moodScore"), errors="coerce")
 
-    rows = []
-    for decision_id, (_, row) in enumerate(decision_rows.iterrows(), start=1):
-        start_pos = int(row.name)
-        window = frame.iloc[start_pos : start_pos + 24].copy()
-        hours_in_window = len(window)
-        complete_window = hours_in_window == 24
-        fitbit_observed = int(window["fitbit_observed"].sum())
-        fitbit_coverage_fraction = fitbit_observed / hours_in_window if hours_in_window > 0 else 0.0
+#     hr_fill = float(hr_avg.dropna().median()) if hr_avg.notna().any() else 0.0
+#     mood_fill = float(mood_score.dropna().mean()) if mood_score.notna().any() else 0.0
 
-        if not complete_window:
-            status = "truncated_range"
-        elif fitbit_observed >= 24:
-            status = "fully_observed"
-        elif fitbit_coverage_fraction >= 0.5:
-            status = "partially_observed"
-        else:
-            status = "heavily_imputed"
+#     result["cov_trail_steps_24h"] = step_proxy.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
+#     result["cov_trail_sleep_minutes_24h"] = sleep_minutes.fillna(0.0).shift(1).rolling(24, min_periods=1).sum()
+#     result["cov_trail_hr_mean_24h"] = hr_avg.fillna(hr_fill).shift(1).rolling(24, min_periods=1).mean()
+#     result["cov_trail_mood_mean_24h"] = mood_score.fillna(mood_fill).shift(1).rolling(24, min_periods=1).mean()
 
-        rows.append(
-            {
-                "decision_id": decision_id,
-                "decision_time_utc": row["time_utc"],
-                "decision_local_time": row["local_time"],
-                "decision_local_date": row["local_date"],
-                "hours_in_window": hours_in_window,
-                "complete_window": bool(complete_window),
-                "fitbit_observed_hours": fitbit_observed,
-                "fitbit_coverage_fraction": fitbit_coverage_fraction,
-                "reward_window_status": status,
-                "window_start_position": start_pos,
-                "window_end_position": start_pos + hours_in_window - 1,
-            }
-        )
+#     send_series = pd.to_numeric(result.get("messageSent", 0), errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)
+#     hours_since_send = np.full(len(result), np.inf, dtype=float)
+#     last_send_index = None
+#     for index, sent_flag in enumerate(send_series.to_numpy(dtype=float)):
+#         if sent_flag >= 0.5:
+#             last_send_index = index
+#             hours_since_send[index] = 0.0
+#         elif last_send_index is not None:
+#             hours_since_send[index] = float(index - last_send_index)
 
-    return pd.DataFrame(rows)
+#     result["cov_send_lag_0_3h"] = ((hours_since_send >= 0) & (hours_since_send <= 3)).astype(float)
+#     result["cov_send_lag_4_11h"] = ((hours_since_send >= 4) & (hours_since_send <= 11)).astype(float)
+#     result["cov_send_lag_12_23h"] = ((hours_since_send >= 12) & (hours_since_send <= 23)).astype(float)
+#     result["baseline_log_mean"] = build_baseline_log_mean(
+#         step_proxy,
+#         result["local_hour"],
+#         result["local_dayofweek"],
+#     )
+#     return result
 
 
-def prepare_hourly_model_data(
-    hourly_frame: pd.DataFrame,
-    *,
-    participant_id: str,
-    start_utc: pd.Timestamp,
-    end_utc: pd.Timestamp,
-    covariate_keys: list[str],
-    assumed_timezone: str,
-) -> HourlyStepModelData:
-    """Prepare the participant-specific data object used by the POMP model."""
+# def build_decision_windows(frame: pd.DataFrame) -> pd.DataFrame:
+#     """Identify local 3pm decision times and their following 24-hour windows."""
 
-    if hourly_frame.empty:
-        raise ValueError("Selected participant/date range produced no hourly rows.")
+#     decision_rows = frame.loc[frame["local_hour"] == 15].copy()
+#     if decision_rows.empty:
+#         return pd.DataFrame(
+#             columns=[
+#                 "decision_id",
+#                 "decision_time_utc",
+#                 "decision_local_time",
+#                 "decision_local_date",
+#                 "hours_in_window",
+#                 "complete_window",
+#                 "fitbit_observed_hours",
+#                 "fitbit_coverage_fraction",
+#                 "reward_window_status",
+#                 "window_start_position",
+#                 "window_end_position",
+#             ]
+#         )
 
-    working = hourly_frame.copy()
-    working["time_utc"] = pd.to_datetime(working["time_utc"], utc=True, errors="coerce")
-    working = working.dropna(subset=["time_utc"]).sort_values("time_utc").reset_index(drop=True)
+#     rows = []
+#     for decision_id, (_, row) in enumerate(decision_rows.iterrows(), start=1):
+#         start_pos = int(row.name)
+#         window = frame.iloc[start_pos : start_pos + 24].copy()
+#         hours_in_window = len(window)
+#         complete_window = hours_in_window == 24
+#         fitbit_observed = int(window["fitbit_observed"].sum())
+#         fitbit_coverage_fraction = fitbit_observed / hours_in_window if hours_in_window > 0 else 0.0
 
-    study_user_id = None
-    if "STUDY_USER_ID" in working.columns:
-        values = working["STUDY_USER_ID"].dropna().astype(str)
-        study_user_id = values.iloc[0] if not values.empty else None
+#         if not complete_window:
+#             status = "truncated_range"
+#         elif fitbit_observed >= 24:
+#             status = "fully_observed"
+#         elif fitbit_coverage_fraction >= 0.5:
+#             status = "partially_observed"
+#         else:
+#             status = "heavily_imputed"
 
-    working["local_time"] = working["time_utc"].dt.tz_convert(assumed_timezone)
-    working["local_date"] = working["local_time"].dt.date
-    working["local_hour"] = working["local_time"].dt.hour.astype(int)
-    working["local_dayofweek"] = working["local_time"].dt.dayofweek.astype(int)
-    working = add_hourly_covariates(working)
+#         rows.append(
+#             {
+#                 "decision_id": decision_id,
+#                 "decision_time_utc": row["time_utc"],
+#                 "decision_local_time": row["local_time"],
+#                 "decision_local_date": row["local_date"],
+#                 "hours_in_window": hours_in_window,
+#                 "complete_window": bool(complete_window),
+#                 "fitbit_observed_hours": fitbit_observed,
+#                 "fitbit_coverage_fraction": fitbit_coverage_fraction,
+#                 "reward_window_status": status,
+#                 "window_start_position": start_pos,
+#                 "window_end_position": start_pos + hours_in_window - 1,
+#             }
+#         )
 
-    selected = working.loc[(working["time_utc"] >= start_utc) & (working["time_utc"] <= end_utc)].copy()
-    if selected.empty:
-        raise ValueError("No hourly rows fall inside the requested UTC range.")
-
-    selected["fitbit_steps_obs"] = pd.to_numeric(selected["fitbitSteps"], errors="coerce")
-    selected["fitbit_observed"] = selected["fitbit_steps_obs"].notna().astype(int)
-    if int(selected["fitbit_observed"].sum()) == 0:
-        raise ValueError("No observed Fitbit step data are available in the selected range.")
-
-    normalized_covariates = []
-    dropped_covariates = []
-    covariate_standardization = {}
-    covariate_params = {}
-
-    for key in covariate_keys:
-        if key not in COVARIATE_SPECS:
-            continue
-        spec = COVARIATE_SPECS[key]
-        values = pd.to_numeric(selected[spec.source_col], errors="coerce")
-        if spec.standardize:
-            mean = float(values.mean()) if values.notna().any() else 0.0
-            std = float(values.std(ddof=0)) if values.notna().any() else 0.0
-            if np.isclose(std, 0.0):
-                standardized = values.fillna(mean) - mean
-            else:
-                standardized = (values.fillna(mean) - mean) / std
-            if float(np.nanmax(np.abs(standardized.to_numpy(dtype=float)))) <= 1e-12:
-                dropped_covariates.append(key)
-                continue
-            selected[spec.source_col] = standardized.astype(float)
-            covariate_standardization[key] = {"mean": mean, "std": std}
-        else:
-            binary_values = values.fillna(0.0).astype(float)
-            if float(binary_values.max()) <= 0.0:
-                dropped_covariates.append(key)
-                continue
-            selected[spec.source_col] = binary_values
-            covariate_standardization[key] = {"mean": 0.0, "std": 1.0}
-
-        covariate_params[key] = spec.beta_param
-        normalized_covariates.append(key)
-
-    selected = selected.sort_values("time_utc").reset_index(drop=True)
-    selected["time_index"] = np.arange(1, len(selected) + 1, dtype=float)
-    decision_window_frame = build_decision_windows(selected)
-
-    return HourlyStepModelData(
-        participant_id=participant_id,
-        study_user_id=study_user_id,
-        hourly_frame=selected,
-        covariate_keys=normalized_covariates,
-        covariate_params=covariate_params,
-        covariate_standardization=covariate_standardization,
-        decision_window_frame=decision_window_frame,
-        dropped_covariates=dropped_covariates,
-        start_utc=start_utc,
-        end_utc=end_utc,
-        assumed_timezone=assumed_timezone,
-    )
+#     return pd.DataFrame(rows)
 
 
-def build_step_pomp_default_params(hourly_data: HourlyStepModelData) -> dict[str, float]:
-    defaults = {
-        "phi": 0.75,
-        "sigma": 0.30,
-        "k_fitbit": 10,
-    }
-    for cov_key in hourly_data.covariate_keys:
-        defaults[COVARIATE_SPECS[cov_key].beta_param] = 0.0
-    return defaults
+# def prepare_hourly_model_data(
+#     hourly_frame: pd.DataFrame,
+#     *,
+#     participant_id: str,
+#     start_utc: pd.Timestamp,
+#     end_utc: pd.Timestamp,
+#     covariate_keys: list[str],
+#     assumed_timezone: str,
+# ) -> HourlyStepModelData:
+#     """Prepare the participant-specific data object used by the POMP model."""
+
+#     if hourly_frame.empty:
+#         raise ValueError("Selected participant/date range produced no hourly rows.")
+
+#     working = hourly_frame.copy()
+#     working["time_utc"] = pd.to_datetime(working["time_utc"], utc=True, errors="coerce")
+#     working = working.dropna(subset=["time_utc"]).sort_values("time_utc").reset_index(drop=True)
+
+#     study_user_id = None
+#     if "STUDY_USER_ID" in working.columns:
+#         values = working["STUDY_USER_ID"].dropna().astype(str)
+#         study_user_id = values.iloc[0] if not values.empty else None
+
+#     working["local_time"] = working["time_utc"].dt.tz_convert(assumed_timezone)
+#     working["local_date"] = working["local_time"].dt.date
+#     working["local_hour"] = working["local_time"].dt.hour.astype(int)
+#     working["local_dayofweek"] = working["local_time"].dt.dayofweek.astype(int)
+#     working = add_hourly_covariates(working)
+
+#     selected = working.loc[(working["time_utc"] >= start_utc) & (working["time_utc"] <= end_utc)].copy()
+#     if selected.empty:
+#         raise ValueError("No hourly rows fall inside the requested UTC range.")
+
+#     selected["fitbit_steps_obs"] = pd.to_numeric(selected["fitbitSteps"], errors="coerce")
+#     selected["fitbit_observed"] = selected["fitbit_steps_obs"].notna().astype(int)
+#     if int(selected["fitbit_observed"].sum()) == 0:
+#         raise ValueError("No observed Fitbit step data are available in the selected range.")
+
+#     normalized_covariates = []
+#     dropped_covariates = []
+#     covariate_standardization = {}
+#     covariate_params = {}
+
+#     for key in covariate_keys:
+#         if key not in COVARIATE_SPECS:
+#             continue
+#         spec = COVARIATE_SPECS[key]
+#         values = pd.to_numeric(selected[spec.source_col], errors="coerce")
+#         if spec.standardize:
+#             mean = float(values.mean()) if values.notna().any() else 0.0
+#             std = float(values.std(ddof=0)) if values.notna().any() else 0.0
+#             if np.isclose(std, 0.0):
+#                 standardized = values.fillna(mean) - mean
+#             else:
+#                 standardized = (values.fillna(mean) - mean) / std
+#             if float(np.nanmax(np.abs(standardized.to_numpy(dtype=float)))) <= 1e-12:
+#                 dropped_covariates.append(key)
+#                 continue
+#             selected[spec.source_col] = standardized.astype(float)
+#             covariate_standardization[key] = {"mean": mean, "std": std}
+#         else:
+#             binary_values = values.fillna(0.0).astype(float)
+#             if float(binary_values.max()) <= 0.0:
+#                 dropped_covariates.append(key)
+#                 continue
+#             selected[spec.source_col] = binary_values
+#             covariate_standardization[key] = {"mean": 0.0, "std": 1.0}
+
+#         covariate_params[key] = spec.beta_param
+#         normalized_covariates.append(key)
+
+#     selected = selected.sort_values("time_utc").reset_index(drop=True)
+#     selected["time_index"] = np.arange(1, len(selected) + 1, dtype=float)
+#     decision_window_frame = build_decision_windows(selected)
+
+#     return HourlyStepModelData(
+#         participant_id=participant_id,
+#         study_user_id=study_user_id,
+#         hourly_frame=selected,
+#         covariate_keys=normalized_covariates,
+#         covariate_params=covariate_params,
+#         covariate_standardization=covariate_standardization,
+#         decision_window_frame=decision_window_frame,
+#         dropped_covariates=dropped_covariates,
+#         start_utc=start_utc,
+#         end_utc=end_utc,
+#         assumed_timezone=assumed_timezone,
+#     )
 
 
-def get_cached_participant_hourly(
-    participant_id: str,
-    *,
-    start_utc: pd.Timestamp,
-    end_utc: pd.Timestamp,
-    lookback_hours: int,
-) -> pd.DataFrame:
-    cache_inputs = {
-        "participant_id": participant_id,
-        "analysis_start_utc_iso": start_utc.isoformat(),
-        "analysis_end_utc_iso": end_utc.isoformat(),
-        "lookback_hours": int(lookback_hours),
-    }
-    return get_or_compute_shelve(
-        "participant_hourly_frame",
-        cache_inputs,
-        lambda: load_participant_hourly_from_csv(
-            participant_id,
-            start_utc.isoformat(),
-            end_utc.isoformat(),
-            lookback_hours=lookback_hours,
-        ),
-        prepare_for_store=lambda frame: frame.copy(deep=True),
-    )
+# def build_step_pomp_default_params(hourly_data: HourlyStepModelData) -> dict[str, float]:
+#     defaults = {
+#         "phi": 0.75,
+#         "sigma": 0.30,
+#         "k_fitbit": 10,
+#     }
+#     for cov_key in hourly_data.covariate_keys:
+#         defaults[COVARIATE_SPECS[cov_key].beta_param] = 0.0
+#     return defaults
 
 
-def get_cached_hourly_model_data(
-    participant_hourly: pd.DataFrame,
-    *,
-    participant_id: str,
-    start_utc: pd.Timestamp,
-    end_utc: pd.Timestamp,
-    covariate_keys: list[str],
-    assumed_timezone: str,
-) -> HourlyStepModelData:
-    cache_inputs = {
-        "participant_id": participant_id,
-        "analysis_start_utc_iso": start_utc.isoformat(),
-        "analysis_end_utc_iso": end_utc.isoformat(),
-        "covariate_keys": list(covariate_keys),
-        "assumed_timezone": assumed_timezone,
-    }
-    return get_or_compute_shelve(
-        "participant_hourly_model_data",
-        cache_inputs,
-        lambda: prepare_hourly_model_data(
-            participant_hourly,
-            participant_id=participant_id,
-            start_utc=start_utc,
-            end_utc=end_utc,
-            covariate_keys=covariate_keys,
-            assumed_timezone=assumed_timezone,
-        ),
-        prepare_for_store=clone_hourly_step_model_data,
-    )
+# def get_cached_participant_hourly(
+#     participant_id: str,
+#     *,
+#     start_utc: pd.Timestamp,
+#     end_utc: pd.Timestamp,
+#     lookback_hours: int,
+# ) -> pd.DataFrame:
+#     cache_inputs = {
+#         "participant_id": participant_id,
+#         "analysis_start_utc_iso": start_utc.isoformat(),
+#         "analysis_end_utc_iso": end_utc.isoformat(),
+#         "lookback_hours": int(lookback_hours),
+#     }
+#     return get_or_compute_shelve(
+#         "participant_hourly_frame",
+#         cache_inputs,
+#         lambda: load_participant_hourly_from_csv(
+#             participant_id,
+#             start_utc.isoformat(),
+#             end_utc.isoformat(),
+#             lookback_hours=lookback_hours,
+#         ),
+#         prepare_for_store=lambda frame: frame.copy(deep=True),
+#     )
 
-participant_hourly = get_cached_participant_hourly(
-    participant_id,
-    start_utc=analysis_start,
-    end_utc=analysis_end,
-    lookback_hours=participant_data_lookback_hours,
-)
 
-hourly_data = get_cached_hourly_model_data(
-    participant_hourly,
-    participant_id=participant_id,
-    start_utc=analysis_start,
-    end_utc=analysis_end,
-    covariate_keys=covariate_keys,
-    assumed_timezone=assumed_local_timezone,
-)
+# def get_cached_hourly_model_data(
+#     participant_hourly: pd.DataFrame,
+#     *,
+#     participant_id: str,
+#     start_utc: pd.Timestamp,
+#     end_utc: pd.Timestamp,
+#     covariate_keys: list[str],
+#     assumed_timezone: str,
+# ) -> HourlyStepModelData:
+#     cache_inputs = {
+#         "participant_id": participant_id,
+#         "analysis_start_utc_iso": start_utc.isoformat(),
+#         "analysis_end_utc_iso": end_utc.isoformat(),
+#         "covariate_keys": list(covariate_keys),
+#         "assumed_timezone": assumed_timezone,
+#     }
+#     return get_or_compute_shelve(
+#         "participant_hourly_model_data",
+#         cache_inputs,
+#         lambda: prepare_hourly_model_data(
+#             participant_hourly,
+#             participant_id=participant_id,
+#             start_utc=start_utc,
+#             end_utc=end_utc,
+#             covariate_keys=covariate_keys,
+#             assumed_timezone=assumed_timezone,
+#         ),
+#         prepare_for_store=clone_hourly_step_model_data,
+#     )
 
-initial_params = build_step_pomp_default_params(hourly_data)
-for param_name, param_value in initial_param_overrides.items():
-    if param_name in initial_params:
-        initial_params[param_name] = param_value
+# participant_hourly = get_cached_participant_hourly(
+#     participant_id,
+#     start_utc=analysis_start,
+#     end_utc=analysis_end,
+#     lookback_hours=participant_data_lookback_hours,
+# )
 
-active_free_params = [param for param in free_params if param in initial_params]
+# hourly_data = get_cached_hourly_model_data(
+#     participant_hourly,
+#     participant_id=participant_id,
+#     start_utc=analysis_start,
+#     end_utc=analysis_end,
+#     covariate_keys=covariate_keys,
+#     assumed_timezone=assumed_local_timezone,
+# )
 
-fitbit_missingness_percentage = 100.0 * (
-    1.0 - float(hourly_data.hourly_frame["fitbit_observed"].mean())
-)
+# initial_params = build_step_pomp_default_params(hourly_data)
+# for param_name, param_value in initial_param_overrides.items():
+#     if param_name in initial_params:
+#         initial_params[param_name] = param_value
 
-participant_summary = pd.DataFrame(
-    [
-        {
-            "Participant ID": participant_id,
-            "Complete 24 hour reward windows": int(hourly_data.decision_window_frame["complete_window"].sum()),
-            "Fitbit missingness percentage": f"{fitbit_missingness_percentage:.2f}%",
-        }
-    ]
-)
+# active_free_params = [param for param in free_params if param in initial_params]
 
-display_table(participant_summary, precision=2)
+# fitbit_missingness_percentage = 100.0 * (
+#     1.0 - float(hourly_data.hourly_frame["fitbit_observed"].mean())
+# )
+
+# participant_summary = pd.DataFrame(
+#     [
+#         {
+#             "Participant ID": participant_id,
+#             "Complete 24 hour reward windows": int(hourly_data.decision_window_frame["complete_window"].sum()),
+#             "Fitbit missingness percentage": f"{fitbit_missingness_percentage:.2f}%",
+#         }
+#     ]
+# )
+
+# display_table(participant_summary, precision=2)
 ```
 
 
@@ -1805,35 +1808,45 @@ for pid in participant_ids:
     results.append(hw8.run_participant(pid, cache_cfg=cache_cfg, cfg=analysis_cfg))
 ```
 
-### Global Search
-
+<!--
 What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
+-->
+
+We chose three participants to illustrate how different levels of missingness affect the model fitting and reward prediction. @reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. @residual-plot shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
 
 ```{python}
 # | echo: false
-# | label: display-tables
+# | label: concat-tables
 # display tables
 
 participant_summary_all = pd.concat([r.participant_summary for r in results], ignore_index=True)
 participant_summary_all["Fitbit missingness percentage"] = participant_summary_all["Fitbit missingness percentage"].map(lambda x: f"{x:.2f}%")
-display_table(participant_summary_all, precision=2)
+
 
 local_mle_all = pd.concat([r.local_mle_summary for r in results], ignore_index=True).round(3)
 global_best_all = pd.concat([r.global_best_summary for r in results], ignore_index=True).round(3)
 coef_all = pd.concat([r.coefficient_table for r in results], ignore_index=True).round(3)
 stage_all = pd.concat([r.global_stage_summary for r in results], ignore_index=True).round(3)
 
-#display_table(local_mle_all, precision=3)
-display_table(global_best_all, precision=3)
-display_table(stage_all, precision=3)
-display_table(coef_all, precision=3)
 ```
 
-### Diagnostics
+```{python}
+# | echo: false
+# | label: tbl-participant-summary
+# | tbl-cap: "Participant-level summary of data completeness and reward windows"
 
-Here we plot an estimate of the reconstructed latent reward, alongside the observed reward.
+display_table(participant_summary_all, precision=2)
 
-(How much masking causes how much RMSE? If there's room/time) 
+```
+
+```{python}
+# | echo: false
+# | label: tbl-global-mle
+# | tbl-cap: "Summary of global search results"
+
+display_table(global_best_all, precision=3)
+```
+
 ```{python}
 # | echo: false
 # | label: reward-plot
@@ -1844,7 +1857,7 @@ def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     return r.global_search_result.best_run
 
 plot_source = reward_plot_fit_source  # "local" or "global"
-n = len(results)
+n = 2 #len(results) # set to 1 for individual plots, or len(results) for all participants in one figure with subplots
 fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(reward_plot_fig_width, reward_plot_fig_height * n), sharex=False)
 
 if n == 1:
@@ -1875,6 +1888,8 @@ plt.show()
 ```
 
 ```{python}
+# | echo: false
+# | label: residual-plot
 # Residuals: all participants on one plot + per-participant trend line
 plot_source = residual_plot_fit_source
 
@@ -1938,24 +1953,13 @@ plt.tight_layout()
 plt.show()
 ```
 
-
-Notice that the latent always upper bounds the observed reward, which makes sense because many of the individual buckets are empty. To demonstrate this, we plot below missingness vs reward residual for several participants:
-
-Notice that the estimated latent reward always upper bounds the observed reward. This is because it's a sum of hourly buckets, for which many of the observations are missing. The second plot (maybe include a trend line?) shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is the point of using a latent model to begin-with, we expect that there are many steps the participant is taking that aren't being picked up. However, this introduces great challenges in benchmarking (elaborate on challenges?).
-
 ### Benchmarks
-
-Finding the best way to benchmark these models was a challenge. We employ a few measures of model performance: 1) Log-likelihood (uses latent, not prediction), 2) hourly masked RMSE (prediction vs observed),  3) masked RMSE on 24-hour rewards (prediction vs latent), 4) and masked RMSE on 24-hour (prediction vs observation). 5) Correlation with the observed hourly buckets, and observed daily reward.
-
-Because the end-goal is prediction, not inference, we aim for the model that predicts unseen data the best, and employ a data masking regime. We mask 20% of the available data, fit the models, and observe error in predicting the known, but masked, data. (We also observe how different levels of masking affect the result).
-
-For pedagogical purposes, we visualize individual and group level models with the simpler AR(1) configuration, but report benchmarks on each of these models at the end.
 
 Benchmark Draft:
 
-There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations.
+There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations. Additionally, we're fitting 78 personalized models jointly, so we need an aggregate benchmark that captures this predictive ability across all of the participants.
 
-First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero, making error calculations misleading in those cases.
+First, we considered evaluating error, defined as the difference between predicted and observed values, only for hourly observations with nonzero Fitbit step counts. Since participants do not always wear their devices, some observed step counts are recorded as zero. As you can see from the plot
 
 Since error can only be meaningfully computed when the observed step count is greater than zero, we used a masking approach. This involves fitting two models: one on all observed hourly data and another on 80% of the observed data (with 20% masked). To compute error, we use the model trained on the 80% subset and evaluate it on the 20% of masked observations that originally had nonzero step counts. We refer to this performance metric as the masked subtotal. More information on how the metric was computed can be found in the supplementary material.
 
