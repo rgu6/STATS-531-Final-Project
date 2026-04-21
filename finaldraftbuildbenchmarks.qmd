@@ -663,7 +663,6 @@ CACHE_PATHS = {
     "derived": CACHE_ROOT / "derived",
     "manifests": CACHE_ROOT / "manifests",
     "logs": CACHE_ROOT / "logs",
-    "report_exports": CACHE_ROOT / "report_exports",
 }
 for path in CACHE_PATHS.values():
     path.mkdir(parents=True, exist_ok=True)
@@ -715,27 +714,6 @@ SEARCH_STAGE_SETTINGS = [
 RESOLVED_CONFIG["config_hash"] = hashlib.sha256(
     json.dumps(RESOLVED_CONFIG, sort_keys=True, default=str).encode("utf-8")
 ).hexdigest()[:16]
-REPORT_EXPORT_FILES = {
-    "resolved_config": CACHE_PATHS["report_exports"] / "resolved_config.json",
-    "model_comparison": CACHE_PATHS["report_exports"] / "model_comparison.csv",
-    "benchmark_summary": CACHE_PATHS["report_exports"] / "benchmark_summary.csv",
-    "parameter_summary": CACHE_PATHS["report_exports"] / "parameter_summary.csv",
-    "timing_summary": CACHE_PATHS["report_exports"] / "timing_summary.csv",
-    "task_manifest": CACHE_PATHS["report_exports"] / "task_manifest.csv",
-    "cohort_summary": CACHE_PATHS["report_exports"] / "cohort_summary.json",
-}
-REPORT_EXPORT_REQUIRED_KEYS = [
-    "resolved_config",
-    "model_comparison",
-    "benchmark_summary",
-    "parameter_summary",
-    "timing_summary",
-    "task_manifest",
-    "cohort_summary",
-]
-RESOLVED_CONFIG["report_exports_ready"] = all(
-    REPORT_EXPORT_FILES[key].exists() for key in REPORT_EXPORT_REQUIRED_KEYS
-)
 ```
 
 ```{python}
@@ -749,6 +727,41 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from IPython.display import display
+import jax
+
+
+backend_probe_error = None
+try:
+    JAX_BACKEND = str(jax.default_backend())
+except Exception as exc:
+    JAX_BACKEND = "uninitialized"
+    backend_probe_error = exc
+
+if effective_device == "gpu":
+    if backend_probe_error is not None:
+        raise RuntimeError(
+            "device='gpu' was requested in finaldraft.qmd, but JAX backend initialization failed before a GPU check "
+            f"could complete: {backend_probe_error!r}"
+        )
+    gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+    if not gpu_devices or JAX_BACKEND != "gpu":
+        raise RuntimeError(
+            "device='gpu' was requested in finaldraft.qmd, but JAX did not initialize a GPU backend. "
+            f"default_backend={JAX_BACKEND!r}, devices={[device.platform for device in jax.devices()]!r}"
+        )
+elif backend_probe_error is not None:
+    # Cache-only preview renders should not fail just because JAX backend probing
+    # is noisy on Windows. Real compute paths still require a working CPU backend.
+    if str(RESOLVED_CONFIG["fit_scope"]) != "benchmarks_from_cache_only":
+        raise RuntimeError(
+            "device='cpu' was requested in finaldraft.qmd, but JAX backend initialization failed "
+            f"before compute began: {backend_probe_error!r}"
+        )
+elif JAX_BACKEND != "cpu":
+    raise RuntimeError(
+        "device='cpu' was requested in finaldraft.qmd, but JAX initialized a different backend. "
+        f"default_backend={JAX_BACKEND!r}"
+    )
 
 CSV_PATH = PROJECT_ROOT / "FitbitHourly.csv"
 if not CSV_PATH.exists():
@@ -804,27 +817,6 @@ def estimate_label(value: object) -> str:
         "smoothed": "smoothed",
     }
     return mapping.get(str(value), str(value))
-
-
-def read_report_json(path: Path) -> object:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def read_report_csv(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    return pd.read_csv(path)
-
-
-def load_report_exports(file_map: dict[str, Path]) -> dict[str, object]:
-    payload: dict[str, object] = {}
-    for key, path in file_map.items():
-        if path.suffix.lower() == ".csv":
-            payload[key] = read_report_csv(path)
-        else:
-            payload[key] = read_report_json(path)
-    return payload
 ```
 
 # Introduction
