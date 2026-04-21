@@ -909,7 +909,7 @@ for pid in participant_ids:
 What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
 -->
 
-We chose three participants to illustrate how different levels of missingness, described in @tbl-participant-summary, affect the model fitting and reward prediction. @reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. 
+We chose three participants to illustrate how different levels of missingness, described in @tbl-participant-summary, affect the model fitting and reward prediction. @fig-reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. 
 
 ```{python}
 #| echo: false
@@ -945,6 +945,8 @@ display_table(global_best_all, precision=3)
 ```
 
 ```{python}
+#| echo: false
+#| label: fig-reward-plot
 def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     s = str(source).lower().strip()
     if s == "local":
@@ -1017,11 +1019,11 @@ plt.tight_layout()
 plt.show()
 ```
 
-@residual-plot shows that there's a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
+@fig-residual-plot shows a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy motivates using a latent model, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. The missing data presents an additional challenge for benchmarking the accuracy of the model.
 
 ```{python}
 #| echo: false
-#| label: residual-plot
+#| label: fig-residual-plot
 # Residuals: all participants on one plot + per-participant trend line
 plot_source = residual_plot_fit_source
 
