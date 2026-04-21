@@ -62,11 +62,9 @@ Peer review comments - more diagnostic plots, like looking at likelihood anomali
 No description of time zone handling
 -->
 
-Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about predicting step count in the next 24 hours following a motivating message.
+Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability (HRV), while ours is primarily about predicting step count in the next 24 hours following a motivating message sent to study participants.
 
 Both projects face the same issue of missing data. The HRV project pooled all participants together into a population-level daily summary, taking the median measurement of each day. While we initally designed Partially Observed Markov Process (POMP) models for individual participants, we also incorporated global and partial pooling to jointly learn measurement dispersion parameters across participants in a highly compute-intensive, high parameter "panel pomp". In our search, we didn't find any projects which focused on prediction of missing data, nor which implemented a panel pomp. Because of this, we focused less on model diagnostics and scientific questions answered by inference, instead performing model selection by predictive ability, using predictions on masked data.
-
-[After reading past peer reviews, we made sure to add more diagnostic plots, including those describing likelihood anomalies and effective sample size.]
 
 ## Research Question
 
