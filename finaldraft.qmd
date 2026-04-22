@@ -1,5 +1,5 @@
 ---
-title: "Title of Project (TBD)\\vspace{-2cm}"
+title: "Predicting Missing Wearable Device Data with Panel POMP \\vspace{-2cm}"
 bibliography: references.bib
 nocite: "@*"
 csl: ieee.csl
@@ -87,11 +87,9 @@ number-sections: true
 
 ## Abstract {.unnumbered}
 
-The Intern Health Study (IHS) examines the health outcomes of medical interns who experience high levels of stress, and evaluates reinforcement learning based mobile health interventions aimed at improving mood, sleep, and physical activity. Although data are collected from three wearable devices (Garmin, Apple, and Fitbit), we focus on Fitbit data for this analysis.
+Missing data causes problems in reinforcement-learning based models, such as those used for mental health interventions in the Intern Health Study (IHS). When reward data are frequently missing, for example because a wearable device is not turned on or worn, reinforcement-learning based models learn more slowly. This project aims to estimate this missing physical activity data with a latent Partially Observed Markov Process (POMP) model in a panel setting with 78 participants.
 
-This project focuses on latent physical activity, which we measure using step counts. A key challenge in the data is that hourly step counts are not recorded when participants are not wearing their devices. As a result, the reinforcement learning system lacks a complete 24-hour reward signal and cannot directly assess whether physical activity has improved.
-
-We compare AR(1)-based panel POMP models with participant-specific, globally pooled, and partially pooled Fitbit dispersion parameters, together with an ARMA baseline. Our primary performance metric is the masked subtotal benchmark, which masks 20% of observed hourly data and evaluates prediction on the held-out subtotal. Additional reported metrics include masked hourly RMSE, daily and hourly correlations, and panel log-likelihood summaries.
+Joint learning of measurement dispersion is attempted with two different pooling regimes, partial pooling and global pooling, and compared against a no-pooling POMP and a baseline ARMA model. As a prediction task, we devised a masked data-based metric to compare model performance and found structure in the measurement dispersion, but only a modest advantage for the pooling regimes.
 
 ```{python}
 #| tags: [parameters]
@@ -176,7 +174,6 @@ wear_sigma_window_high = None
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -184,12 +181,7 @@ import yaml
 
 
 PROJECT_ROOT = Path.cwd().resolve()
-APP_CODE_ROOT = PROJECT_ROOT.parent / "eda"
-HELPERS_ROOT = PROJECT_ROOT / "helpers"
 REPORT_QMD_PATH = PROJECT_ROOT / "finaldraft.qmd"
-
-if str(APP_CODE_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_CODE_ROOT))
 
 
 def _raw_params() -> dict:
@@ -383,9 +375,9 @@ def get_rl_defaults(rl: int) -> dict[str, object]:
             "device": "gpu",
             "artifact_tag": "rl2_masked_v4",
             "participant_set": "full_set",
-            "model_set": "single",
+            "model_set": "smoke",
             "pooling_mode": "all",
-            "fit_scope": "benchmarks_from_cache_only",
+            "fit_scope": "masked_only",
             "panel_chunk_size": 78,
             "stage1_starts": 32,
             "stage2_starts": 16,
@@ -667,7 +659,6 @@ CACHE_PATHS = {
 }
 for path in CACHE_PATHS.values():
     path.mkdir(parents=True, exist_ok=True)
-HELPERS_ROOT.mkdir(parents=True, exist_ok=True)
 
 requested_device = str(RESOLVED_CONFIG["device"]).strip().lower()
 if requested_device not in {"cpu", "gpu"}:
@@ -736,6 +727,7 @@ REPORT_EXPORT_REQUIRED_KEYS = [
 RESOLVED_CONFIG["report_exports_ready"] = all(
     REPORT_EXPORT_FILES[key].exists() for key in REPORT_EXPORT_REQUIRED_KEYS
 )
+EXPECTED_REPORT_BENCHMARK_VERSION = "v2"
 ```
 
 ```{python}
@@ -814,7 +806,10 @@ def read_report_json(path: Path) -> object:
 def read_report_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
-    return pd.read_csv(path)
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def load_report_exports(file_map: dict[str, Path]) -> dict[str, object]:
@@ -825,15 +820,48 @@ def load_report_exports(file_map: dict[str, Path]) -> dict[str, object]:
         else:
             payload[key] = read_report_json(path)
     return payload
+
+
+def report_exports_cover_active_results(
+    payload: dict[str, object],
+    *,
+    active_model_families: list[str],
+    active_pooling_modes: list[str],
+    expected_benchmark_version: str,
+) -> bool:
+    benchmark_summary = pd.DataFrame(payload.get("benchmark_summary", pd.DataFrame())).copy()
+    if benchmark_summary.empty:
+        return False
+    if "benchmark_version" not in benchmark_summary.columns:
+        return False
+    benchmark_versions = {
+        str(value)
+        for value in benchmark_summary["benchmark_version"].dropna().astype(str).tolist()
+    }
+    if expected_benchmark_version not in benchmark_versions:
+        return False
+    for model_family in active_model_families:
+        family_rows = benchmark_summary.loc[
+            benchmark_summary["model_family"].astype(str) == str(model_family)
+        ].copy()
+        if family_rows.empty:
+            return False
+        expected_pooling_modes = (
+            {"not_applicable"} if str(model_family) == "arma_aic" else set(map(str, active_pooling_modes))
+        )
+        present_pooling_modes = set(family_rows["pooling_mode"].astype(str).tolist())
+        if not expected_pooling_modes.issubset(present_pooling_modes):
+            return False
+    return True
 ```
 
 # Introduction
 
 ## Background Information and Project Motivation
 
-For a new medical school graduate, the first year of residency is demanding and stressful. The yearly Intern Health Study (IHS) aims to study the effect of stress on mental health outcomes, enrolling over a thousand new interns each year. @internhealthstudy The study collects large amounts of data on interns, such as quarterly psychological surveys, DNA samples, daily mood scores, and sleep and physical activity data from wearable devices. In this project, we focus only on physical activity measured by step count, in the 2024 IHS.
+For a new medical school graduate, the first year of residency is demanding and stressful. The yearly Intern Health Study (IHS) aims to study the effect of stress on mental health outcomes, enrolling over a thousand new interns each year. @internhealthstudy The study collects large amounts of data on interns including quarterly psychological surveys, DNA samples, daily mood scores, and sleep and physical activity data from wearable devices. In this project, we focus only on physical activity measured by step count in the 2024 IHS.
 
-In addition to collecting data, recent years are incorporating reinforcement learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a patient a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participants' behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the reward for a given day is the number of steps a user takes in the 24 hours after the 3 p.m. decision point in local time.
+In addition to collecting data, recent iterations of the IHS are incorporating reinforcement-learning based mobile health interventions. At 3:00 p.m. each day, an agent decides based on the participant's context whether to send a participant a message, with some learned probability. This randomized setup allows researchers to study whether these messages influence participant behavior. In this context, the objective is to increase physical activity, so step count serves as the reward outcome of interest. To be precise, the reward for a given day is the number of steps a user takes in the 24 hours after the 3 p.m. decision point in local time.
 
 Reinforcement learning and contextual bandit methods are becoming increasingly important in healthcare because they enable personalized interventions. In digital health, these methods can be used to decide when and how to deliver prompts that encourage healthier behaviors, such as increasing physical activity or improving medication adherence. Contextual bandits are especially useful because they incorporate patient characteristics when selecting an action. For example, RoME is a robust contextual bandit method for mobile health applications that determines when to send notifications and how to personalize interventions based on a user's current situation. @RoME Similarly, Oralytics is a mobile health intervention system that uses an online reinforcement learning algorithm to determine optimal times to deliver interventions that promote oral self-care behaviors. @Oralytics
 
@@ -843,17 +871,17 @@ This project is motivated by the growing need to apply these methods in realisti
 
 Most past projects centered on infectious disease or financial topics. There was one project that also looked at measurements from wearable devices @HeartRate. That project focused on the instantaneous effect of environmental noise on heart rate variability, while ours is primarily about predicting step count in the next 24 hours following a motivating message sent to study participants.
 
-Both projects face the same issue of missing data. The heart rate variability project pooled all participants together into a population-level daily summary, taking the median measurement of each day. While we initially designed Partially Observed Markov Process (POMP) models for individual participants, we also incorporated global and partial pooling to jointly learn measurement dispersion parameters across participants in a compute-intensive panel POMP system. Because our goal is prediction rather than scientific inference, we evaluate models mainly through held-out masked prediction benchmarks.
+Both projects face the same issue of missing data. The heart rate variability project pooled all participants together into a population-level daily summary, taking the median measurement of each day. While we initially designed Partially Observed Markov Process (POMP) models for individual participants, we also incorporated global and partial pooling to jointly learn measurement dispersion parameters across participants in a compute-intensive, high-parameter panel POMP system. We did not find prior course projects that focused on prediction of missing activity data or implemented a panel POMP, so we emphasize predictive model selection on masked data rather than scientific inference.
 
 ## Research Question
 
-When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward cannot be constructed, so that day provides no direct training information for the reinforcement learning based intervention. The goal of this project is to build personalized POMP models for each doctor and to estimate the missing rewards.
+When a participant does not wear the watch, no step count data are collected during that period. On days when the watch is worn for only a short time, or not at all, a reward cannot be constructed, so that day provides no training information for the reinforcement learning based intervention. The goal of this project is to build personalized POMP models for each doctor and to estimate the missing rewards.
 
 # Exploratory Data Analysis
 
-Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, as well as in ownership and syncing behavior, the data streams cannot be combined perfectly. While joint measurement models across devices would be valuable, due to time and compute constraints, we limit ourselves to Fitbit users.
+Participants wear devices from Garmin, Fitbit, and Apple, and some individuals may use more than one device. Since these devices differ in how they record and store data, as well as behavioral differences in device ownership, the data streams cannot be combined perfectly. While joint measurement models across devices would be valuable, due to time and compute constraints, we limit ourselves to Fitbit users.
 
-For this project, we focused only on users who had Fitbit data for several reasons. Since not many users had Garmin devices, it would be difficult to train the model with such limited data. Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches, and may aggregate step counts originating from other wearables. We found it difficult to disentangle the biases associated with this device.
+For this project, we focused only on users who had Fitbit data. Since few users had Garmin devices, it would be difficult to train the model, and Apple HealthKit acts as a central repository for health and fitness data which combines information from both phones and watches and may aggregate step counts originating from other wearables. We found it difficult to disentangle the biases associated with Apple-based measurements.
 
 The `FitbitHourly.csv` file contains data from 299 participants with Fitbit data. We limited our analysis to the period from July 1, 2024, to September 30, 2024, the first three months of IHS 2024. Additionally, we filtered to participants with Fitbit step data in at least half of their hourly rows, which left us with 78 participants.
 
@@ -873,7 +901,7 @@ valid_ids = (
 prune_df = prune_df.loc[prune_df["PARTICIPANTIDENTIFIER"].isin(valid_ids)].copy()
 ```
 
-The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering to hours with non-missing data. The means are substantially smaller than the corresponding standard deviations, which is inconsistent with an iid Poisson observation model and motivates the use of both latent temporal dynamics and an over-dispersed measurement distribution.
+The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering to hours with non-missing data. The means are quite a bit larger than would be expected under an iid Poisson observation model, which motivates the use of a latent stochastic process together with a measurement model that allows extra dispersion.
 
 ```{python}
 #| echo: false
@@ -933,7 +961,7 @@ N_t \mid x_t \sim \mathrm{Poisson}(\lambda_t),
 \log \lambda_t = \bar{\ell} + \alpha_{h(t)} + \delta_{w(t)} + x_t.
 $$
 
-Here, $h(t)$ is the local hour of day and $w(t)$ is the local day of week. The hour-of-day and weekday terms are estimated empirically for each participant from the observed step series.
+Here, $h(t)$ is the local hour of day and $w(t)$ is the local day of week. The hour-of-day and weekday terms are estimated empirically for each participant from the observed step series, with the construction details given in the supplementary material.
 
 The observed Fitbit step count is modeled as a noisy measurement of the latent hourly steps:
 
@@ -955,9 +983,9 @@ $$
 R_d = \sum_{t \in H(d)} N_t,
 $$
 
-where $H(d)$ denotes the 24 hourly buckets following the 3 p.m. decision time on day $d$.
+where $H(d)$ denotes the 24 hourly buckets following the 3 p.m. decision time on day $d$. Because the reward is defined using the latent counts $N_t$, the model can be used to reconstruct daily rewards even when hourly Fitbit observations are missing.
 
-We compare three AR(1)-based panel models that differ only in how the measurement over-dispersion parameter is handled:
+All 78 participants are jointly fit in a panel POMP. We compare three AR(1)-based panel models that differ only in how the measurement over-dispersion parameter is handled:
 
 1. participant-specific $k_i$ with no pooling,
 2. a globally shared $k$,
@@ -971,7 +999,7 @@ $$
 - n \log \tau_k.
 $$
 
-When $\tau_k$ is small, the model approaches the globally pooled regime; when $\tau_k$ is large, the model approaches the no-pooling regime. We also keep an ARMA baseline in the aggregate comparison tables.
+When $\tau_k$ is small, the model approaches the globally pooled regime; when $\tau_k$ is large, the model approaches the no-pooling regime. Because all participants are using Fitbit devices, $k$ is the parameter with the clearest device-level interpretation and is therefore the most natural candidate for pooling. We also keep an ARMA baseline in the aggregate comparison tables.
 
 # Individual Participant Demonstrations
 
@@ -981,7 +1009,7 @@ The final integrated report focuses on the aggregate panel pipeline rather than 
 
 There were several benchmarks to consider, and narrowing them down was challenging. Since our goal was prediction rather than inference, we prioritized models that perform best on unseen data. Specifically, we aimed to improve the accuracy of predicted 24-hour rewards when users have missing hourly observations. Because we fit 78 personalized models jointly, we also need aggregate summaries that capture predictive ability across participants.
 
-We therefore use a masking approach. For each participant, we fit a model after masking 20% of the observed hourly Fitbit data, then evaluate reconstruction quality on the held-out masked observations. We report both hourly reconstruction metrics and a daily held-out subtotal benchmark that aligns more directly with the 24-hour reward target.
+Direct error is only meaningful on hours where Fitbit originally recorded nonzero step counts. When a participant is not wearing the device, the observed series can contain zeros that do not represent true inactivity, so evaluating prediction error against those zeros would be misleading. We therefore use a masking approach: for each participant, we refit the model after masking 20% of the observed hourly Fitbit data and then evaluate reconstruction quality on the held-out masked observations. We report both hourly reconstruction metrics and a daily held-out subtotal benchmark that aligns more directly with the 24-hour reward target. Additional details on the masked subtotal metric are given in the supplementary material.
 
 # Inference Settings and Computing Constraints(considerations)
 
@@ -1067,26 +1095,52 @@ The Results section is the only place in this report that is allowed to run the 
 #| message: false
 #| label: aggregate-results-imports
 
-from helpers.computedraft_pipeline import run_cache_first_pipeline
-```
-
-```{python}
-#| echo: false
-#| warning: false
-#| message: false
-#| label: aggregate-results-compute
-
 aggregate_config = dict(RESOLVED_CONFIG)
 aggregate_config["search_stage_settings"] = SEARCH_STAGE_SETTINGS
 
-aggregate_result = run_cache_first_pipeline(
-    CSV_PATH,
-    resolved_config=aggregate_config,
-    cache_paths=CACHE_PATHS,
-    active_model_families=list(aggregate_config["active_model_families"]),
-    active_pooling_modes=list(aggregate_config["active_pooling_modes"]),
-    progress_callback=lambda message: print(message, flush=True),
-)
+aggregate_export_payload: dict[str, object] = {}
+aggregate_result = None
+report_exports_exist = all(REPORT_EXPORT_FILES[key].exists() for key in REPORT_EXPORT_REQUIRED_KEYS)
+use_report_exports = False
+
+if str(aggregate_config["cache_mode"]) != "force_recompute" and report_exports_exist:
+    # Report exports are plain CSV/JSON artifacts so preview renders can avoid
+    # importing the heavy JAX / pypomp stack when cached results already exist.
+    aggregate_export_payload = load_report_exports(REPORT_EXPORT_FILES)
+    use_report_exports = report_exports_cover_active_results(
+        aggregate_export_payload,
+        active_model_families=list(map(str, aggregate_config["active_model_families"])),
+        active_pooling_modes=list(map(str, aggregate_config["active_pooling_modes"])),
+        expected_benchmark_version=EXPECTED_REPORT_BENCHMARK_VERSION,
+    )
+
+if not use_report_exports:
+    import jax
+
+    jax_backend = str(jax.default_backend())
+    if effective_device == "gpu":
+        gpu_devices = [device for device in jax.devices() if device.platform == "gpu"]
+        if not gpu_devices or jax_backend != "gpu":
+            raise RuntimeError(
+                "device='gpu' was requested in finaldraft.qmd, but JAX did not initialize a GPU backend. "
+                f"default_backend={jax_backend!r}, devices={[device.platform for device in jax.devices()]!r}"
+            )
+    elif jax_backend != "cpu":
+        raise RuntimeError(
+            "device='cpu' was requested in finaldraft.qmd, but JAX initialized a different backend. "
+            f"default_backend={jax_backend!r}"
+        )
+
+    from helpers.computedraft_pipeline import run_cache_first_pipeline
+
+    aggregate_result = run_cache_first_pipeline(
+        CSV_PATH,
+        resolved_config=aggregate_config,
+        cache_paths=CACHE_PATHS,
+        active_model_families=list(aggregate_config["active_model_families"]),
+        active_pooling_modes=list(aggregate_config["active_pooling_modes"]),
+        progress_callback=lambda message: print(message, flush=True),
+    )
 ```
 
 ```{python}
@@ -1095,14 +1149,27 @@ aggregate_result = run_cache_first_pipeline(
 #| message: false
 #| label: aggregate-results-derived
 
-aggregate_base_artifact = aggregate_result.base_artifact
-aggregate_task_manifest = aggregate_result.task_manifest.copy()
-aggregate_derived_artifact = aggregate_result.derived_artifact
-aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", pd.DataFrame()).copy()
-aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
-aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
-aggregate_timing_summary = aggregate_result.timing_summary.copy()
-aggregate_masked_fits = aggregate_derived_artifact.get("masked_fits", {})
+if use_report_exports:
+    aggregate_task_manifest = pd.DataFrame(aggregate_export_payload.get("task_manifest", pd.DataFrame())).copy()
+    aggregate_model_comparison = pd.DataFrame(aggregate_export_payload.get("model_comparison", pd.DataFrame())).copy()
+    aggregate_benchmark_summary = pd.DataFrame(aggregate_export_payload.get("benchmark_summary", pd.DataFrame())).copy()
+    aggregate_parameter_summary = pd.DataFrame(aggregate_export_payload.get("parameter_summary", pd.DataFrame())).copy()
+    aggregate_timing_summary = pd.DataFrame(aggregate_export_payload.get("timing_summary", pd.DataFrame())).copy()
+    aggregate_masked_fits = {}
+    exported_cohort_summary = dict(aggregate_export_payload.get("cohort_summary", {}))
+else:
+    aggregate_task_manifest = aggregate_result.task_manifest.copy()
+    aggregate_derived_artifact = aggregate_result.derived_artifact
+    aggregate_model_comparison = aggregate_derived_artifact.get("model_comparison", pd.DataFrame()).copy()
+    aggregate_benchmark_summary = aggregate_derived_artifact.get("benchmark_summary", pd.DataFrame()).copy()
+    aggregate_parameter_summary = aggregate_derived_artifact.get("parameter_summary", pd.DataFrame()).copy()
+    aggregate_timing_summary = aggregate_result.timing_summary.copy()
+    aggregate_masked_fits = aggregate_derived_artifact.get("masked_fits", {})
+    exported_cohort_summary = {
+        "selected_participants": len(aggregate_derived_artifact.get("participant_ids", [])),
+        "full_set_participants": len(aggregate_result.base_artifact.get("full_set_ids", [])),
+        "small_set_participants": len(aggregate_result.base_artifact.get("small_set_ids", [])),
+    }
 
 if aggregate_parameter_summary.empty and aggregate_masked_fits:
     parameter_rows = []
@@ -1151,6 +1218,18 @@ if not aggregate_parameter_summary.empty and {"model_family", "pooling_mode"}.is
             sd_k=("k_fitbit", "std"),
         )
     )
+
+aggregate_cohort_summary = {
+    "Selected participants": int(
+        exported_cohort_summary.get(
+            "selected_participants",
+            aggregate_parameter_summary["participant_id"].nunique() if "participant_id" in aggregate_parameter_summary.columns else 0,
+        )
+    ),
+    "Full-set participants": int(exported_cohort_summary.get("full_set_participants", 0)),
+    "Small-set participants": int(exported_cohort_summary.get("small_set_participants", 0)),
+    "Benchmark rows": int(len(aggregate_benchmark_summary)),
+}
 ```
 
 ```{python}
@@ -1158,12 +1237,7 @@ if not aggregate_parameter_summary.empty and {"model_family", "pooling_mode"}.is
 #| label: results-cohort-summary
 
 cohort_display = make_key_value_table(
-    {
-        "Selected participants": len(aggregate_derived_artifact.get("participant_ids", [])),
-        "Full-set participants": len(aggregate_base_artifact.get("full_set_ids", [])),
-        "Small-set participants": len(aggregate_base_artifact.get("small_set_ids", [])),
-        "Benchmark rows": len(aggregate_benchmark_summary),
-    }
+    aggregate_cohort_summary
 )
 display_table(cohort_display, precision=2)
 ```
@@ -1353,19 +1427,51 @@ else:
 
 # Conclusion
 
-Our analysis focuses on reconstructing missing hourly Fitbit activity and the implied 24-hour reward using panel POMP models. The aggregate cache-first pipeline lets us compare participant-specific, globally pooled, and partially pooled AR(1) models, together with an ARMA baseline, on the same held-out masking benchmark. The tables in the Results section summarize the current ranking under the active RL configuration in terms of subtotal RMSE, hourly reconstruction error, correlation, and fitted parameter behavior.
+<!--
+paragraph 1: summary of the analysis that was done
 
-The main limitations are computational and structural. We limited attention to Fitbit-only measurement models, used a single masking regime, and did not yet rebuild the backward smoothing layer for efficient panel execution. Future work should expand the covariate set, explore alternative masking regimes, investigate multi-device observation models, and revisit smoothing once a batched GPU-efficient implementation is available.
+partial pooling did slightly better compared to individual with no pooling - suggesting shared structure
+[ which suggests the presence of shared structure across participants.] 
+individiual
+paritial normal distribution
+globally shared k 
+
+three maksed subtotal correlation, log likelihood
+
+paragraph 2: limitations, direction for future analysis, wrap up sentence
+-->
+
+Our project focused on predicting the 24-hour reward for participants using Fitbit step count data. We compared three different AR(1)-based panel POMP models: an individual (no pooling) model, in which each participant has their own over-dispersion parameter $k$; a partial pooling model, in which each participant’s $k$ value is drawn from a shared distribution with a penalty term to prevent extreme deviations; and a global pooling model, in which all participants share the same $k$ value. We also compare to a baseline ARMA model. Our results show that partial pooling performed slightly worse compared to models with no pooling or global pooling. The model with global pooling performed the best. 
+
+To evaluate performance, we trained each model on 80\% of the observed hourly data and predicted the remaining 20\% of observed step counts. We calculated the masked subtotal error ($\text{RMSE}_\frac{\text{subtotal}}{\sqrt{m}}$), which describes the difference between predicted and observed values, for the remaining 20\%. Additionally, we computed the correlation between observed and predicted step counts at both the daily and hourly levels. The hourly correlation was 0.27, whereas the daily reward correlation was much stronger at 0.77. We also used log-likelihood as an additional evaluation measure.
+
+In future work, there are several additional methods we could explore in our model specification. Our current latent process model only incorporates baseline averages over hour of day and week. For $$log \lambda_t$$, we could try including additional covariates related to physical activity, such as heart rate and sleep. Additionally, we were not able to model the measurement distribution jointly across all three devices for participants who used multiple devices, and therefore could not fully leverage all available data. Instead, we focused primarily on Fitbit data due to difficulties in disentangling device-specific biases. In terms of parameter sharing, we also considered clustering participants based on shared characteristics, such as similar sleep schedules, to better capture common behavioral patterns.
+
+In terms of model structure, there are also limitations imposed by the pypomp library. We initially intended to include a broader set of covariates and use LASSO regularization for participant-specific feature selection to improve flexibility in modeling long-term dependencies. However, this was not feasible within the current framework of the library.
+
+There are also more robust approaches we could have used to evaluate model accuracy. In our analysis, we only applied masking to 20% of non-missing hourly observations per participant. Future work could explore a range of masking proportions to assess sensitivity to missingness. Additionally, masking could be applied in different structures, such as contiguous hourly blocks, full-day removals, or random missingness patterns.
+
+Finally, there are limitations in our choice of benchmark and evaluation metric. We used masked subtotal error, described as the difference between predicted and observed values on masked non-missing hourly observations. This choice was necessary because observed step counts during missing periods are recorded as zero, which may not reflect true step counts if participants were not wearing their devices. As a result, computing error against these zeros would be misleading. Instead, we restricted evaluation to masked data that was originally observed. If more time were available, we would conduct simulation studies with known latent step counts to compute a more standard metric such as RMSE.
+
+<!--
+Earlier draft:
+Our analysis focuses on reconstructing missing hourly Fitbit activity and the implied 24-hour reward using panel POMP models. The aggregate cache-first pipeline lets us compare participant-specific, globally pooled, and partially pooled AR(1) models, together with an ARMA baseline, on the same held-out masking benchmark. Across the final RL=2 comparison, partial pooling gives only a modest improvement over the no-pooling alternative, which suggests some shared structure in Fitbit measurement dispersion but not a dramatic gain from pooling.
+
+The main limitations are computational and structural. We limited attention to Fitbit-only measurement models, used a single masking regime, and did not yet rebuild the backward smoothing layer for efficient panel execution. Future work should expand the covariate set to include variables such as heart rate and sleep, explore multi-device observation models, investigate participant clustering for parameter sharing, and compare alternative masking regimes such as contiguous blocks or full-day masking. We also ran into practical limitations of the current `pypomp` framework when trying to vary feature sets across participants, which constrained the model space we could explore.
+
+Limitations:
+Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules). Models we didn't get to try. How much masking affects performance. Different ways of doing masking (contiguous, across whole days, totally random, etc).
+-->
 
 # Contributions
 
-- Group Member 1:
-- Group Member 2:
-- Group Member 3:
+- Group Member 1: 
+- Group Member 2: EDA, section 1.2, section 4 figures, analysis brainstorming, editing and formatting
+- Group Member 3: EDA, abstract, introduction literature review, conclusion, analysis brainstorming, editing and formatting
 
 # Acknowledgments {.unnumbered}
 
-This report used the template available in the STATS 531 GitHub repository. AI tools were used for coding, analysis, and Quarto formatting support.
+This report used the template available in the STATS 531 GitHub repository. AI was used with ChatGPT 5.3 Codex extensively for coding, analysis, and formatting in Quarto, using the Codex and Quarto VS Code extensions. Microsoft Copilot and UM-GPT 5.2 were also used.
 
 # Bibliography {.unnumbered}
 
@@ -1376,18 +1482,19 @@ This report used the template available in the STATS 531 GitHub repository. AI t
 
 ## Data Sources and Transformations
 
-This project uses 2024 Intern Health Study data provided by a group member who is currently conducting research on this topic.
+This project uses 2024 Intern Health Study (IHS) data provided by a group member who is currently conducting research on this topic.
 
 The following data file was used for this project:
 
 - `FitbitHourly.csv`
-  - `PARTICIPANTIDENTIFIER`: unique study participant identifier
-  - `STUDY_USER_ID`: study-specific user identifier
-  - `time_utc`, `date_utc`, `hour_of_day_utc`: hourly timestamp fields
-  - device-specific steps, heart rate, heart rate variability, and sleep variables
-  - corresponding `Missing` indicator columns
-  - `moodScore`
-  - `messageSent`
+  - `PARTICIPANTIDENTIFIER`: unique ID for each doctor that participated in the study
+  - `STUDY_USER_ID`: study-specific unique ID for each participant
+  - `time_utc`: local time
+  - `date_utc`: local date
+  - `hour_of_day_utc`: local hour from 0 to 23
+  - for Apple, Fitbit, and Garmin, the file records steps, heart rate, heart rate variability, sleep, and the corresponding missingness indicators
+  - `moodScore`: survey-based score ranging from 0 to 10
+  - `messageSent`: binary indicator for whether the agent sent the participant a message during that hour
   - `messageStrategy`
 
 ## Masked Subtotal Benchmarking Metric
@@ -1398,9 +1505,9 @@ $$
 \mathcal{H}_d = \{ t \in d : \text{hour } t \text{ was artificially masked and } y_t \text{ is observed} \}.
 $$
 
-Let $m_d = |\mathcal{H}_d|$ represent the subset of available data that was masked but originally had observed step counts.
+Let $m_d = |\mathcal{H}_d|$ represent the 20% of available data that was masked but originally had nonzero step counts.
 
-Next, define the true observed subtotal for this set as
+Next, define the true observed subtotal for this masked subset as
 
 $$
 S_d = \sum_{t \in \mathcal{H}_d} y_t,
@@ -1412,13 +1519,13 @@ $$
 \hat{S}_d = \sum_{t \in \mathcal{H}_d} \hat{y}_t.
 $$
 
-The subtotal error is
+The subtotal error is defined as
 
 $$
 E_d = \hat{S}_d - S_d = \sum_{t \in \mathcal{H}_d} (\hat{y}_t - y_t),
 $$
 
-and the normalized subtotal error is
+It is important to normalize the subtotal error, since the raw subtotal error tends to grow with the number of masked hourly observations in the day. The normalized subtotal error is
 
 $$
 Z_d = \frac{E_d}{\sqrt{m_d}}.
@@ -1430,4 +1537,66 @@ $$
 \mathrm{RMSE}_{\text{subtotal}/\sqrt{m}} = \sqrt{\frac{1}{D} \sum_{d=1}^{D} Z_d^2}.
 $$
 
-## Additional background information
+# Supplementary Tables
+
+```{python}
+# | echo: false
+# | label: local-global-tables
+
+
+display_table(local_mle_all, precision=3)
+display_table(stage_all, precision=3)
+display_table(coef_all, precision=3)
+```
+
+```{python}
+#| warning: false
+#| message: false
+#| echo: false
+#| output: asis
+
+# add above
+
+local_controls_display = (
+    pd.DataFrame(
+        [
+            {
+                "Particles": local_if2_controls["particles"],
+                "IF2 iterations": local_if2_controls["mif_iterations"],
+                "Cooling fraction": local_if2_controls["cooling_fraction"],
+                "RW SD scale": local_if2_controls["rw_sd_scale"],
+                "Evaluation particles": local_if2_controls["evaluation_particles"],
+                "Evaluation pfilter reps": local_if2_controls["evaluation_pfilter_reps"],
+            }
+        ],
+        index=["Local"],
+    )
+    .transpose()
+    .reset_index()
+)
+local_controls_display.columns = ["Setting", "Local"]
+print(
+    render_side_by_side_tables_latex(
+        [
+            {
+                "caption": "Local IF2 controls",
+                "width": 0.27,
+                "df": local_controls_display,
+                "precision": 3,
+            },
+            {
+                "caption": "Global IF2 stage controls",
+                "width": 0.43,
+                "df": global_stage_controls_display,
+                "precision": 3,
+            },
+            {
+                "caption": "Global start box",
+                "width": 0.24,
+                "df": global_start_box_display,
+                "precision": 3,
+            },
+        ]
+    )
+)
+```
