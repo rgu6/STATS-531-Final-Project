@@ -25,6 +25,7 @@ from pypomp import Pomp, ParTrans, RWSigma
 class CacheConfig:
     enable_shelve_cache: bool = True
     clear_shelve_cache: bool = False
+    require_existing_cache_hits: bool = False
     cache_version_token: str = "hw8_cache_v1"
     shelve_cache_directory: str = ".hw8_cache"
     shelve_cache_basename: str = "HW8"     # can be overridden in QMD
@@ -160,10 +161,28 @@ class ShelveCache:
 
     def get_or_compute(self, cache_name: str, cache_inputs: dict, compute_fn, *, prepare_for_store=None):
         cache_key = self.build_cache_key(cache_name, **cache_inputs)
+        cache_load_error = None
         if self.cfg.enable_shelve_cache:
             with shelve.open(str(self.cache_path)) as db:
                 if cache_key in db:
-                    return db[cache_key]
+                    try:
+                        return db[cache_key]
+                    except Exception as exc:
+                        cache_load_error = exc
+                        try:
+                            del db[cache_key]
+                        except Exception:
+                            pass
+        if self.cfg.require_existing_cache_hits:
+            if cache_load_error is not None:
+                raise FileNotFoundError(
+                    f"Unreadable shelve cache entry for {cache_name!r} in {self.cache_path} "
+                    f"while require_existing_cache_hits=True."
+                ) from cache_load_error
+            raise FileNotFoundError(
+                f"Missing required shelve cache entry for {cache_name!r} in {self.cache_path} "
+                f"while require_existing_cache_hits=True."
+            )
         value = compute_fn()
         stored_value = prepare_for_store(value) if prepare_for_store is not None else value
         if self.cfg.enable_shelve_cache:

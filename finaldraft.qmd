@@ -1,16 +1,17 @@
 ---
 title: "Predicting Missing Wearable Device Data with Panel POMP \\vspace{-2cm}"
+jupyter: python3
 bibliography: references.bib
 nocite: "@*"
 csl: ieee.csl
 params:
   RL: 2
   device: null                    # null = use RL preset; "cpu" | "gpu"
-  cache_mode: null                # null = use RL preset; prefer_cache | recompute_missing_only | force_recompute
+  cache_mode: "prefer_cache"      # default cached render path
   cache_version: "v1"
-  artifact_tag: null              # null = use RL preset
+  artifact_tag: "rl2_masked_v4"   # default RL=2 cached artifact bundle
   participant_set: null           # null = use RL preset; "small_set" | "full_set"
-  model_set: null                 # null = use RL preset; "single" | "smoke" | "core" | "all"
+  model_set: "smoke"              # default report model set
   model_family: null              # null = use RL preset; e.g. "ar1" | "arma_aic"
   pooling_mode: null              # null = use RL preset; string, csv string, YAML list, or "all"
   covariate_mode: null
@@ -96,11 +97,11 @@ Joint learning of measurement dispersion is attempted with two different pooling
 
 RL = 2
 device = None
-cache_mode = None
+cache_mode = "prefer_cache"
 cache_version = "v1"
-artifact_tag = None
+artifact_tag = "rl2_masked_v4"
 participant_set = None
-model_set = None
+model_set = "smoke"
 model_family = None
 pooling_mode = None
 covariate_mode = None
@@ -731,8 +732,27 @@ REPORT_EXPORT_REQUIRED_KEYS = [
     "task_manifest",
     "cohort_summary",
 ]
+REPORT_EXPORT_PLOT_FILES = {
+    "subtotal_plot": CACHE_PATHS["report_exports"] / "plots" / "heldout_subtotal_benchmark_comparison.png",
+    "parameter_scatterplots": CACHE_PATHS["report_exports"] / "plots" / "ar1_parameter_scatterplots.png",
+}
+SECTION4_EXPORT_FILES = {
+    "global_mle": CACHE_PATHS["report_exports"] / "section4_global_mle_table.csv",
+    "local_mle": CACHE_PATHS["report_exports"] / "section4_local_mle_table.csv",
+    "stage": CACHE_PATHS["report_exports"] / "section4_stage_table.csv",
+    "coefficients": CACHE_PATHS["report_exports"] / "section4_coefficient_table.csv",
+}
+SECTION4_EXPORT_REQUIRED_KEYS = [
+    "global_mle",
+    "local_mle",
+    "stage",
+    "coefficients",
+]
 RESOLVED_CONFIG["report_exports_ready"] = all(
     REPORT_EXPORT_FILES[key].exists() for key in REPORT_EXPORT_REQUIRED_KEYS
+)
+RESOLVED_CONFIG["section4_exports_ready"] = all(
+    SECTION4_EXPORT_FILES[key].exists() for key in SECTION4_EXPORT_REQUIRED_KEYS
 )
 EXPECTED_REPORT_BENCHMARK_VERSION = "v2"
 ```
@@ -923,11 +943,10 @@ valid_ids = (
 prune_df = prune_df.loc[prune_df["PARTICIPANTIDENTIFIER"].isin(valid_ids)].copy()
 ```
 
-The chart below is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering to hours with non-missing data. The means are quite a bit larger than would be expected under an iid Poisson observation model, which motivates the use of a latent stochastic process together with a measurement model that allows extra dispersion.
-
 ```{python}
 #| echo: false
-#| label: eda-mean-vs-sd
+#| include: false
+#| label: eda-mean-vs-sd-build
 
 non_missing = prune_df.loc[prune_df["fitbitStepsMissing"] == 0].copy()
 non_missing["fitbitSteps"] = pd.to_numeric(non_missing["fitbitSteps"], errors="coerce")
@@ -937,13 +956,33 @@ stats = non_missing.groupby("PARTICIPANTIDENTIFIER")["fitbitSteps"].agg(
     ["mean", "std"]
 ).reset_index()
 
-plt.figure(figsize=(5, 4))
-plt.scatter(stats["mean"], stats["std"], alpha=0.8)
-plt.xlabel("Mean Fitbit steps")
-plt.ylabel("Standard deviation of Fitbit steps")
-plt.title("Mean versus variability in non-missing hourly Fitbit steps")
+eda_mean_sd_output_path = CACHE_PATHS["report_exports"] / "plots" / "eda_mean_vs_sd_inline.png"
+eda_mean_sd_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+fig, ax = plt.subplots(figsize=(4.8, 3.6))
+ax.scatter(stats["mean"], stats["std"], alpha=0.8, s=30)
+ax.set_xlabel("Mean Fitbit steps", fontsize=10)
+ax.set_ylabel("Standard deviation of Fitbit steps", fontsize=10)
+ax.set_title("Mean versus variability in non-missing hourly Fitbit steps", fontsize=11)
+ax.tick_params(axis="both", labelsize=9)
 plt.tight_layout()
-plt.show()
+plt.savefig(eda_mean_sd_output_path, dpi=180, bbox_inches="tight")
+plt.close(fig)
+```
+
+```{=latex}
+\noindent
+\begin{minipage}[t]{0.36\textwidth}
+\vspace{0pt}
+The chart on the right is a scatterplot of the mean and standard deviation of hourly steps for each user after filtering to hours with non-missing data. The means are quite a bit larger than would be expected under an iid Poisson observation model, which motivates the use of a latent stochastic process together with a measurement model that allows extra dispersion.
+\end{minipage}\hfill
+\begin{minipage}[t]{0.60\textwidth}
+\vspace{0pt}
+\centering
+\includegraphics[width=\linewidth]{cache/computedraft/v1/rl2_masked_v4/report_exports/plots/eda_mean_vs_sd_inline.png}
+\captionof{figure}{Mean versus variability in non-missing hourly Fitbit steps.}
+\label{fig-eda-mean-vs-sd}
+\end{minipage}
 ```
 
 # Model Design
@@ -995,7 +1034,7 @@ All 78 participants are jointly fit in a panel POMP. We compare three AR(1)-base
 2. a globally shared $k$,
 3. partially pooled participant-specific $k_i$ values.
 
-For partial pooling, we parameterize $\eta_i = \log k_i$ and apply a Gaussian penalty
+For partial pooling, we parameterize $\eta_i = \log k_i$ and apply a Gaussian penalty inside the objective function:
 
 $$
 \sum_{i=1}^{n} \ell_i(\phi_i, \sigma_i, e^{\eta_i})
@@ -1003,14 +1042,16 @@ $$
 - n \log \tau_k.
 $$
 
-When $\tau_k$ is small, the model approaches the globally pooled regime; when $\tau_k$ is large, the model approaches the no-pooling regime. Because all participants are using Fitbit devices, $k$ is the parameter with the clearest device-level interpretation and is therefore the most natural candidate for pooling. We also keep an ARMA baseline in the aggregate comparison tables.
+When $\tau_k$ is small, the model approaches the globally pooled regime; when $\tau_k$ is large, the model approaches the no-pooling regime. Inuitively, each user gets their own $k$, but the penalty nudges them along the shared Gaussian. Because all participants are using Fitbit devices, $k$ is the parameter with the clearest device-level interpretation and is therefore the most natural candidate for pooling. 
+
+Implementing this within the pypomp panel interface is a bit tricky. Each user has its own Pomp model object. The PanelPomp object takes in a list of these unit pomp objects, as well as a "theta_list", designating which parameters are shared and which are unit-specific. For the global model, the $k$ is kept as shared. For the global, the $k$ is kept personal for each individual, but they all share an extra two parameters, "mu_log_k_fitbit" and "log_tau_log_k_fitbit", which correspond to the parameters of the Gaussian penalty. Then, the Gaussian penalty is implemented into the objective function inside the dmeas for the individual Pomp objects.
+
+Lastly, because the missing rewards which are being estimated aren't needed at decision time but can be backfilled later, future information can be used to estimate the missing reward. So we additionally implement the natural smoother, which performs a backwards pass after the forward pass of the filter is used for a prediction.
 
 # Individual Participant Demonstrations
 
-In order to understand the dynamics of the full panel pomp, it will help to see how this model fits at an individual level. As a demonstration, we run a small global MLE search (10 starts, 100 particles, 4 iterations in stage 1) for three separate participants, with low, medium, and high missingness, described in @tbl-participant-summary, to get a low-precision sense of the effect of missingness on reward prediction.
+In order to understand the dynamics of the full panel pomp, it helps to see how the model fits at an individual level. As a demonstration, we run a small global MLE search (10 starts, 100 particles, 4 iterations in stage 1) for three separate participants with low, medium, and high missingness, to get a low-precision sense of the effect of missingness on reward prediction.
 
-
-(REMOVE the showing of Table 1 local IF2 controls, Table 2 Global IF2 stage controls, and Table 3 Global start box)
 <!--
 (ADD Parameter start box for other models)
 -->
@@ -1042,13 +1083,13 @@ initial_sigma = 0.30
 initial_k_fitbit = 200.0
 
 # Local MLE controls
-local_mle_particles = 100
-local_mle_mif_iterations = 6
+local_mle_particles = 50
+local_mle_mif_iterations = 4
 local_mle_random_seed = 11
 local_mle_cooling_fraction = 0.50
 local_mle_rw_sd_scale = 0.02
-local_mle_evaluation_particles = 100
-local_mle_evaluation_pfilter_reps = 3
+local_mle_evaluation_particles = 50
+local_mle_evaluation_pfilter_reps = 1
 
 # Global MLE search controls
 global_search_random_seed = 37
@@ -1059,28 +1100,28 @@ global_search_box_shrink_factor_per_stage = 1.00
 # Global MLE stage 1 controls
 global_stage1_name = "Stage 1"
 global_stage1_n_starts = 10
-global_stage1_keep_top = 3
+global_stage1_keep_top = 2
 global_stage1_particles = 100
 global_stage1_mif_iterations = 4
 global_stage1_cooling_fraction = 0.50
 global_stage1_rw_sd_scale = 0.02
-global_stage1_evaluation_particles = 200
-global_stage1_evaluation_pfilter_reps = 2
+global_stage1_evaluation_particles = 80
+global_stage1_evaluation_pfilter_reps = 1
 global_stage1_n_fresh_random_starts = 0
 global_stage1_n_jittered_restarts = 0
 
 # Global MLE stage 2 controls
 global_stage2_name = "Stage 2"
-global_stage2_n_starts = 4
-global_stage2_keep_top = 2
-global_stage2_particles = 160
-global_stage2_mif_iterations = 8
+global_stage2_n_starts = 2
+global_stage2_keep_top = 1
+global_stage2_particles = 80
+global_stage2_mif_iterations = 4
 global_stage2_cooling_fraction = 0.50
 global_stage2_rw_sd_scale = 0.015
-global_stage2_evaluation_particles = 320
-global_stage2_evaluation_pfilter_reps = 3
-global_stage2_n_fresh_random_starts = 1
-global_stage2_n_jittered_restarts = 1
+global_stage2_evaluation_particles = 120
+global_stage2_evaluation_pfilter_reps = 1
+global_stage2_n_fresh_random_starts = 0
+global_stage2_n_jittered_restarts = 0
 
 # Global start-box controls
 global_start_box_phi_low = -0.95
@@ -1125,7 +1166,7 @@ from time import perf_counter
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import display
+from IPython.display import Image, display
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import gammaln
@@ -1579,31 +1620,6 @@ global_start_box_display = pd.DataFrame(
         for name, bounds in global_search_start_box.items()
     ]
 )
-
-print(
-    render_side_by_side_tables_latex(
-        [
-            {
-                "caption": "Local IF2 controls",
-                "width": 0.27,
-                "df": local_controls_display,
-                "precision": 3,
-            },
-            {
-                "caption": "Global IF2 stage controls",
-                "width": 0.43,
-                "df": global_stage_controls_display,
-                "precision": 3,
-            },
-            {
-                "caption": "Global start box",
-                "width": 0.24,
-                "df": global_start_box_display,
-                "precision": 3,
-            },
-        ]
-    )
-)
 ```
 
 ```{python}
@@ -1612,6 +1628,8 @@ print(
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+
+use_section4_exports = False
 
 import hw8_analysis as hw8
 ```
@@ -1657,6 +1675,7 @@ for pid in participant_ids:
     cache_cfg = hw8.CacheConfig(
         enable_shelve_cache=enable_shelve_cache,
         clear_shelve_cache=clear_shelve_cache,
+        require_existing_cache_hits=False,
         cache_version_token=cache_version_token,
         shelve_cache_directory=shelve_cache_directory,
         shelve_cache_basename=f"example_{last4}",   # per participant
@@ -1665,11 +1684,7 @@ for pid in participant_ids:
     results.append(hw8.run_participant(pid, cache_cfg=cache_cfg, cfg=analysis_cfg))
 ```
 
-<!--
-What things do we say ABOUT a global search? Could do scatterplots of parameters vs parameters (does big sigma get compensated for with small phi? these kinds of questions), potentially profile likelihoods.
--->
 
-@fig-reward-plot demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it's a sum of hourly buckets, for which many of the observations are missing. 
 
 ```{python}
 #| echo: false
@@ -1679,34 +1694,43 @@ What things do we say ABOUT a global search? Could do scatterplots of parameters
 participant_summary_all = pd.concat([r.participant_summary for r in results], ignore_index=True)
 participant_summary_all["Fitbit missingness percentage"] = participant_summary_all["Fitbit missingness percentage"].map(lambda x: f"{x:.2f}%")
 
-
 local_mle_all = pd.concat([r.local_mle_summary for r in results], ignore_index=True).round(3)
 global_best_all = pd.concat([r.global_best_summary for r in results], ignore_index=True).round(3)
 coef_all = pd.concat([r.coefficient_table for r in results], ignore_index=True).round(3)
 stage_all = pd.concat([r.global_stage_summary for r in results], ignore_index=True).round(3)
 
+missingness_lookup = participant_summary_all.loc[:, ["Participant ID", "Fitbit missingness percentage"]].copy()
+global_best_display = (
+    global_best_all.merge(missingness_lookup, how="left", on="Participant ID")
+    .rename(
+        columns={
+            "Participant ID": "PID",
+            "k_fitbit": "k",
+            "Fitbit missingness percentage": "Missingness",
+        }
+    )
+)
+global_best_display = global_best_display.loc[
+    :,
+    [column for column in ["PID", "LogLik", "phi", "sigma", "k", "Missingness"] if column in global_best_display.columns],
+]
+
 ```
 
 ```{python}
 #| echo: false
-#| label: tbl-participant-summary
-#| tbl-cap: "Participant-level summary of data completeness and reward windows"
+#| label: global-mle-table
 
-display_table(participant_summary_all, precision=2)
-
+display_table(global_best_display, precision=3)
 ```
 
 ```{python}
 #| echo: false
-#| label: tbl-global-mle
-#| tbl-cap: "Summary of global search results"
+#| include: false
+#| label: fig-reward-plot-build
+reward_plot_output_path = CACHE_PATHS["report_exports"] / "plots" / "section4_reward_plot_inline.png"
+reward_plot_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-display_table(global_best_all, precision=3)
-```
-
-```{python}
-#| echo: false
-#| label: fig-reward-plot
 def select_run(r: hw8.ParticipantResult, source: str) -> hw8.StepPompRunResult:
     s = str(source).lower().strip()
     if s == "local":
@@ -1722,7 +1746,7 @@ plot_results = [plot_results[pid] for pid in plot_ids if pid in plot_results]
 n = len(plot_results)
 fig, axes = plt.subplots(
     nrows=n, ncols=1,
-    figsize=(reward_plot_fig_width, reward_plot_fig_height * n),
+    figsize=(5.25, 2.7 * n),
     sharex=True
 )
 if n == 1:
@@ -1748,42 +1772,52 @@ for i, (ax, r) in enumerate(zip(axes, plot_results)):
         reward_plot["decision_date"],
         reward_plot["fitbit_observed_reward_24h"],
         color="#2b6cb0",
-        linewidth=1.6,
+        linewidth=1.1,
         marker="o",
-        markersize=3,
+        markersize=2.2,
         label="Observed Fitbit subtotal",
     )
 
-    ax.set_ylabel("24-hour step total", fontsize=reward_plot_axis_label_fontsize)
-    ax.tick_params(axis="y", labelsize=reward_plot_tick_fontsize)
+    ax.set_ylabel("")
+    ax.tick_params(axis="y", labelsize=9)
 
     if i < n - 1:
         ax.tick_params(axis="x", which="both", labelbottom=False)
     else:
-        ax.tick_params(axis="x", labelsize=reward_plot_tick_fontsize)
+        ax.tick_params(axis="x", labelsize=8)
         for label in ax.get_xticklabels():
             label.set_rotation(45)
             label.set_ha("right")
 
-axes[-1].set_xlabel("Decision date", fontsize=reward_plot_axis_label_fontsize)
-axes[0].legend(frameon=False, ncol=2, fontsize=reward_plot_legend_fontsize)
-
-# One overall title
-fig.suptitle(
-    "Reconstructed 24-hour reward (global): MDH-3531-4796 (top) and MDH-7960-3351 (bottom)",
-    fontsize=reward_plot_title_fontsize,
-    y=1.02,
-)
+axes[-1].set_xlabel("Decision date", fontsize=11)
+axes[0].legend(frameon=False, ncol=1, fontsize=8, loc="upper left")
 
 plt.tight_layout()
-plt.show()
+plt.savefig(reward_plot_output_path, dpi=180, bbox_inches="tight")
+plt.close(fig)
 ```
 
-@fig-residual-plot shows a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is why we use a latent model in the first place, as we expect that there are many steps the participant is taking that aren't being picked up by Fitbit or other measurement devices. This phenomenon presents challenges with finding a representative benchmark that we discuss below.
+```{=latex}
+\noindent
+\begin{minipage}[t]{0.72\textwidth}
+\vspace{0pt}
+\centering
+\refstepcounter{figure}\label{fig-reward-plot}
+\includegraphics[width=\linewidth]{cache/computedraft/v1/rl2_masked_v4/report_exports/plots/section4_reward_plot_inline.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.24\textwidth}
+\vspace{0pt}
+Figure~\ref{fig-reward-plot} demonstrates the difference between the latent and observed rewards for individual participants with high and medium missingness. We see that the estimated latent reward is always greater than the observed reward. There is a larger difference for the participant with high missingness. This is expected because it is a sum of hourly buckets, for which many of the observations are missing.
+\end{minipage}
+```
 
 ```{python}
 #| echo: false
-#| label: fig-residual-plot
+#| include: false
+#| label: fig-residual-plot-build
+residual_plot_output_path = CACHE_PATHS["report_exports"] / "plots" / "section4_residual_plot_inline.png"
+residual_plot_output_path.parent.mkdir(parents=True, exist_ok=True)
+
 # Residuals: all participants on one plot + per-participant trend line
 plot_source = residual_plot_fit_source
 
@@ -1800,7 +1834,7 @@ palette = [
 ]
 
 plt.style.use("seaborn-v0_8-whitegrid")
-fig, ax = plt.subplots(figsize=(residual_plot_fig_width, residual_plot_fig_height))
+fig, ax = plt.subplots(figsize=(5.1, 3.6))
 
 ax.axhline(0.0, color="#4a5568", linewidth=1.2, linestyle="--")
 
@@ -1817,34 +1851,49 @@ for i, r in enumerate(results):
     plot_df = pd.DataFrame({"x": x, "y": y}).dropna()
     plot_df["x"] = plot_df["x"].astype(int)
 
-    # points
     ax.scatter(
         plot_df["x"],
         plot_df["y"],
         color=color,
         alpha=0.75,
-        s=40,
+        s=28,
         edgecolor="white",
         linewidth=0.5,
         label=r.participant_id,
     )
 
-    # trend line (simple OLS y = a + b x), only if enough points
     if len(plot_df) >= 2 and plot_df["x"].nunique() >= 2:
         b, a = np.polyfit(plot_df["x"].to_numpy(dtype=float), plot_df["y"].to_numpy(dtype=float), deg=1)
         xs = np.linspace(0, 24, 200)
         ys = a + b * xs
-        ax.plot(xs, ys, color=color, linewidth=2.0, alpha=0.95)
+        ax.plot(xs, ys, color=color, linewidth=1.6, alpha=0.95)
 
-ax.set_title("Filtered reward residual vs missingness (by participant)")
-ax.set_xlabel("Missing Fitbit hours in 24-hour window")
-ax.set_ylabel("Filtered reward − observed subtotal")
+ax.set_title("Filtered reward residual vs missingness", fontsize=11)
+ax.set_xlabel("Missing Fitbit hours in 24-hour window", fontsize=10)
+ax.set_ylabel("Filtered reward - observed subtotal", fontsize=10)
 ax.set_xlim(-0.5, 24.5)
 ax.set_xticks(np.arange(0, 25, 2))
-ax.legend(frameon=False, ncol=1, fontsize=10)
+ax.tick_params(axis="both", labelsize=9)
+ax.legend(frameon=False, ncol=1, fontsize=8)
 
 plt.tight_layout()
-plt.show()
+plt.savefig(residual_plot_output_path, dpi=180, bbox_inches="tight")
+plt.close(fig)
+```
+
+```{=latex}
+\noindent
+\begin{minipage}[t]{0.56\textwidth}
+\vspace{0pt}
+\centering
+\includegraphics[width=\linewidth]{cache/computedraft/v1/rl2_masked_v4/report_exports/plots/section4_residual_plot_inline.png}
+\captionof{figure}{Filtered reward residual versus missingness for the three participant demonstrations.}
+\label{fig-residual-plot}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.40\textwidth}
+\vspace{0pt}
+Figure \ref{fig-residual-plot} shows a linear trend in how much the estimated latent exceeds the observed. This is unsurprising; if the observed only sums 8 non-zero buckets, the latent sums 24 non-zero buckets, and might be approximately three times larger. This discrepancy is why we use a latent model in the first place, as we expect that there are many steps the participant is taking that are not being picked up by Fitbit or other measurement devices. This phenomenon presents challenges with finding a representative benchmark that we discuss below.
+\end{minipage}
 ```
 
 # Benchmarks for Aggregate Modeling
@@ -1855,62 +1904,15 @@ Direct error is only meaningful on hours where Fitbit originally recorded nonzer
 
 # Inference Settings
 
-We ran a global IF2 MLE search for each of the three models with two stages. Stage 1, 32 starts, 1024 particles, 16 iterations, with 256 evaluation particles with 16 evaluation repeats, with a smaller stage 2, 16 starts, 512 particles, 16 iterations, 256 evaluation particles repeated 8 times. 
+We ran a global IF2 MLE search for each of the three models with two stages. Stage 1, 32 starts, 1024 particles, 16 iterations, with 256 evaluation particles with 16 evaluation repeats, with a smaller stage 2, 16 starts, 512 particles, 16 iterations, 256 evaluation particles repeated 8 times. Each fit took about an hour and a half on a 3080 Nvidia GPU with 10GB of VRAM, with 8704 CUDA cores.
 
-The scale of this made computation very challenging! Considering just the version with no pooling, each of the 78 participants had 3 parameters, which comes out to 234 parameters total. Running this across 3 models was very time intensive, and getting it to function correctly in qmd was another challenge entirely!
+The scale of this made computation very challenging! Considering just the version with no pooling, each of the 78 participants had 3 parameters, which comes out to 234 parameters total. Running this across 3 models was very time intensive, and getting it to function correctly in qmd was another challenge entirely! 
 
-```{python}
-#| echo: false
-#| label: inference-settings-table
-
-settings_display = make_key_value_table(
-    {
-        "RL": RESOLVED_CONFIG["RL"],
-        "Device requested": RESOLVED_CONFIG["requested_device"],
-        "Device used": RESOLVED_CONFIG["effective_device"],
-        "Cache mode": RESOLVED_CONFIG["cache_mode"],
-        "Cache version": RESOLVED_CONFIG["cache_version"],
-        "Artifact tag": RESOLVED_CONFIG["artifact_tag"],
-        "Participant set": RESOLVED_CONFIG["participant_set"],
-        "Model set": RESOLVED_CONFIG["model_set"],
-        "Model family": RESOLVED_CONFIG["model_family"],
-        "Pooling modes": ", ".join(map(str, RESOLVED_CONFIG["active_pooling_modes"])),
-        "Fit scope": RESOLVED_CONFIG["fit_scope"],
-        "Smoother scope": RESOLVED_CONFIG["smoother_scope"],
-        "Mask regime": RESOLVED_CONFIG["mask_regime"],
-        "Missing fraction": RESOLVED_CONFIG["missing_fraction"],
-        "Mask replicates": RESOLVED_CONFIG["n_mask_replicates"],
-        "Panel chunk size": RESOLVED_CONFIG["panel_chunk_size"],
-    }
-)
-display_table(settings_display, precision=3)
-```
+In Table~\ref{tbl-inference-search-window} we display the window for each global model that we perform the search on. $k$ was searched on a log scale, and for the partial pooling, the variance $\tau$ and $\mu$ for the penalty term were searched also on the log scale. Figure~\ref{fig-empirical-mu-logk-window} displays the global window for those distribution terms, alongside empirical bootstrap estimates from the partial-pooling and no-pooling models. It is not conclusive, but it suggests that our window does cover this region.
 
 ```{python}
 #| echo: false
-#| label: inference-stage-table
-
-stage_display = pd.DataFrame(SEARCH_STAGE_SETTINGS).rename(
-    columns={
-        "name": "Stage",
-        "n_starts": "Starts",
-        "keep_top": "Keep top",
-        "particles": "Particles",
-        "mif_iterations": "IF2 iterations",
-        "cooling_fraction": "Cooling",
-        "rw_sd_scale": "RW SD",
-        "evaluation_particles": "Eval particles",
-        "evaluation_pfilter_reps": "Eval reps",
-        "n_fresh_random_starts": "Fresh starts",
-        "n_jittered_restarts": "Jittered restarts",
-    }
-)
-display_table(stage_display, precision=3)
-```
-
-```{python}
-#| echo: false
-#| label: inference-search-window-table
+#| label: inference-search-window-table-build
 
 search_window_display = (
     pd.DataFrame(
@@ -1923,13 +1925,77 @@ search_window_display = (
             for parameter_name, bounds in RESOLVED_CONFIG["search_windows"].items()
         ]
     )
+    .loc[
+        lambda df: ~df["Parameter"].isin(
+            [
+                "eta_wear_lag1",
+                "phi1",
+                "phi2",
+                "phi24",
+                "wear_phi",
+                "wear_sigma",
+            ]
+        )
+    ]
     .sort_values("Parameter")
     .reset_index(drop=True)
 )
-display_table(search_window_display, precision=3)
+
+search_window_table_render = search_window_display.copy()
+for column_name in ("Low", "High"):
+    search_window_table_render[column_name] = pd.to_numeric(
+        search_window_table_render[column_name],
+        errors="coerce",
+    ).map(lambda value: f"{value:.3f}" if pd.notna(value) else "")
+
+search_window_table_path = (
+    CACHE_PATHS["report_exports"] / "plots" / "inference_search_window_table_inline.png"
+)
+search_window_table_path.parent.mkdir(parents=True, exist_ok=True)
+
+fig, ax = plt.subplots(figsize=(8.2, 5.6))
+ax.axis("off")
+ax.set_position([0.0, 0.0, 1.0, 1.0])
+table = ax.table(
+    cellText=search_window_table_render.values,
+    colLabels=search_window_table_render.columns,
+    cellLoc="center",
+    colWidths=[0.56, 0.22, 0.22],
+    bbox=[0.02, 0.02, 0.96, 0.96],
+)
+table.auto_set_font_size(False)
+table.set_fontsize(32)
+
+for (row, col), cell in table.get_celld().items():
+    cell.set_edgecolor("#444444")
+    cell.set_linewidth(0.4)
+    if row == 0:
+        cell.set_text_props(weight="bold")
+        cell.set_facecolor("#f3f4f6")
+    elif col == 0:
+        cell.set_text_props(ha="left")
+
+fig.savefig(search_window_table_path, dpi=300, bbox_inches="tight", pad_inches=0.02, facecolor="white")
+plt.close(fig)
+```
+
+```{=latex}
+\noindent
+\begin{minipage}[t]{0.7\textwidth}
+\centering
+\refstepcounter{figure}\label{fig-empirical-mu-logk-window}
+\includegraphics[width=\linewidth]{cache/computedraft/v1/rl2_masked_v4/report_exports/plots/empirical_mu_logk_vs_log_tau_personal_partial.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.28\textwidth}
+\centering
+\refstepcounter{table}\label{tbl-inference-search-window}
+\includegraphics[width=\linewidth]{cache/computedraft/v1/rl2_masked_v4/report_exports/plots/inference_search_window_table_inline.png}
+\end{minipage}
 ```
 
 # Results
+
+Next, we fit the three primary models, as well as ARMA. The ARMA $(p, q)$ is picked by best scoring on AIC independently for each individual. After fitting the three primary models, we make predictions in one pass with a filter (labeling these globalfilter, partialfilter, and personalfilter), then perform the natural smoother with a following backward pass across the data (likewise named globalsmooth, partialsmooth, personalsmooth).
 
 ```{python}
 #| echo: false
@@ -2076,151 +2142,154 @@ aggregate_cohort_summary = {
 
 ```{python}
 #| echo: false
-#| label: results-cohort-summary
-
-cohort_display = make_key_value_table(
-    aggregate_cohort_summary
-)
-display_table(cohort_display, precision=2)
-```
-
-```{python}
-#| echo: false
 #| label: results-model-summary-table
 
 if aggregate_model_comparison.empty:
     print("No aggregate benchmark summaries are available for the current configuration.")
 else:
-    model_summary_display = (
-        aggregate_model_comparison.assign(
-            model=lambda df: df["model_family"].map(model_label),
-            pooling=lambda df: df["pooling_mode"].map(pooling_label),
-            estimate=lambda df: df["estimate_type"].map(estimate_label),
-        )
-        .loc[
-            :,
-            [
-                "model",
-                "pooling",
-                "estimate",
-                "mean_panel_unit_loglik",
-                "hourly_masked_rmse",
-                "heldout_subtotal_rmse_sqrtm",
-            ],
-        ]
-        .rename(
-            columns={
-                "mean_panel_unit_loglik": "Avg logLik",
-                "hourly_masked_rmse": "Hourly RMSE",
-                "heldout_subtotal_rmse_sqrtm": "RMSE Subtotal",
+    comparison_source = aggregate_model_comparison.copy()
+    comparison_source["model_family"] = comparison_source["model_family"].astype(str)
+    comparison_source["pooling_mode"] = comparison_source["pooling_mode"].astype(str)
+    comparison_source["estimate_type"] = comparison_source["estimate_type"].astype(str)
+    comparison_source = comparison_source.loc[comparison_source["estimate_type"] == "filter"].copy()
+
+    smoother_summary_path = CACHE_PATHS["root"] / "smoother_report_exports" / "jax_masked_ar1_v1" / "combined_summary.csv"
+    smoother_summary = pd.DataFrame()
+    if smoother_summary_path.exists():
+        smoother_summary = pd.read_csv(smoother_summary_path)
+        if not smoother_summary.empty:
+            smoother_summary["model_family"] = smoother_summary["model_family"].astype(str)
+            smoother_summary["pooling_mode"] = smoother_summary["pooling_mode"].astype(str)
+            smoother_summary["estimate_type"] = "smoothed"
+
+    model_column_order = [
+        ("ar1", "global_shared_k", "filter", "globalfilter"),
+        ("ar1", "global_shared_k", "smoothed", "globalsmooth"),
+        ("ar1", "partial_pooled_k", "filter", "partialfilter"),
+        ("ar1", "partial_pooled_k", "smoothed", "partialsmooth"),
+        ("ar1", "unit_specific", "filter", "personalfilter"),
+        ("ar1", "unit_specific", "smoothed", "personalsmooth"),
+        ("arma_aic", "not_applicable", "filter", "ARMA"),
+    ]
+
+    metric_lookup: dict[tuple[str, str, str], dict[str, object]] = {}
+    for _, row in comparison_source.iterrows():
+        model_key = (str(row["model_family"]), str(row["pooling_mode"]), "filter")
+        metric_lookup[model_key] = {
+            "Avg logLik": row.get("mean_panel_unit_loglik"),
+            "Hourly RMSE": row.get("hourly_masked_rmse"),
+            "RMSE Subtotal": row.get("heldout_subtotal_rmse_sqrtm"),
+            "Avg hr corr": row.get("hourly_masked_correlation"),
+            "Avg day corr": row.get("daily_correlation"),
+        }
+
+    if not smoother_summary.empty:
+        for _, row in smoother_summary.iterrows():
+            model_key = (str(row["model_family"]), str(row["pooling_mode"]), "smoothed")
+            metric_lookup[model_key] = {
+                "Avg logLik": row.get("avg_log_likelihood"),
+                "Hourly RMSE": row.get("hourly_rmse"),
+                "RMSE Subtotal": row.get("rmse_subtotal_participant_mean"),
+                "Avg hr corr": row.get("avg_hourly_correlation"),
+                "Avg day corr": row.get("avg_daily_correlation"),
             }
-        )
-        .sort_values(["model", "pooling", "estimate"], na_position="last")
-        .reset_index(drop=True)
-    )
-    display_table(model_summary_display, precision=3)
-```
 
-```{python}
-#| echo: false
-#| label: results-correlation-table
-
-if aggregate_model_comparison.empty:
-    print("No correlation summaries are available for the current configuration.")
-else:
-    correlation_display = (
-        aggregate_model_comparison.assign(
-            model=lambda df: df["model_family"].map(model_label),
-            pooling=lambda df: df["pooling_mode"].map(pooling_label),
-            estimate=lambda df: df["estimate_type"].map(estimate_label),
-        )
-        .loc[
-            :,
-            [
-                "model",
-                "pooling",
-                "estimate",
-                "hourly_masked_correlation",
-                "daily_correlation",
-            ],
-        ]
-        .rename(
-            columns={
-                "hourly_masked_correlation": "Avg hr corr",
-                "daily_correlation": "Avg day corr",
+    if not parameter_model_summary.empty:
+        parameter_source = parameter_model_summary.copy()
+        parameter_source["model_family"] = parameter_source["model_family"].astype(str)
+        parameter_source["pooling_mode"] = parameter_source["pooling_mode"].astype(str)
+        smoother_supported_keys = {
+            (model_family, pooling_mode, estimate_type)
+            for model_family, pooling_mode, estimate_type, _ in model_column_order
+        }
+        for _, row in parameter_source.iterrows():
+            filter_key = (str(row["model_family"]), str(row["pooling_mode"]), "filter")
+            parameter_metrics = {
+                "Avg phi": row.get("mean_phi"),
+                "Avg sigma": row.get("mean_sigma"),
+                "Avg k": row.get("mean_k"),
+                "SD k": row.get("sd_k"),
             }
-        )
-        .sort_values(["model", "pooling", "estimate"], na_position="last")
-        .reset_index(drop=True)
-    )
-    display_table(correlation_display, precision=3)
-```
+            metric_lookup.setdefault(filter_key, {}).update(parameter_metrics)
+            smooth_key = (str(row["model_family"]), str(row["pooling_mode"]), "smoothed")
+            if smooth_key in smoother_supported_keys:
+                metric_lookup.setdefault(smooth_key, {}).update(parameter_metrics)
 
-```{python}
-#| echo: false
-#| label: results-parameter-table
+    row_order = [
+        "Avg logLik",
+        "RMSE Subtotal",
+        "Avg hr corr",
+        "Avg day corr",
+        "Avg phi",
+        "Avg sigma",
+        "Avg k",
+        "SD k",
+    ]
 
-if parameter_model_summary.empty:
-    print("No aggregate parameter summary is available for the current configuration.")
-else:
-    parameter_display = (
-        parameter_model_summary.assign(
-            model=lambda df: df["model_family"].map(model_label),
-            pooling=lambda df: df["pooling_mode"].map(pooling_label),
-        )
-        .loc[:, ["model", "pooling", "mean_phi", "mean_sigma", "mean_k", "sd_k"]]
-        .rename(
-            columns={
-                "mean_phi": "Avg phi",
-                "mean_sigma": "Avg sigma",
-                "mean_k": "Avg k",
-                "sd_k": "SD k",
-            }
-        )
-        .sort_values(["model", "pooling"], na_position="last")
-        .reset_index(drop=True)
-    )
-    display_table(parameter_display, precision=3)
-```
+    combined_summary_display = pd.DataFrame({"Metric": row_order})
+    for model_family, pooling_mode, estimate_type, column_label in model_column_order:
+        model_metrics = metric_lookup.get((model_family, pooling_mode, estimate_type), {})
+        combined_summary_display[column_label] = [model_metrics.get(metric_name, np.nan) for metric_name in row_order]
 
-```{python}
-#| echo: false
-#| label: results-subtotal-plot
+    combined_summary_render = combined_summary_display.copy()
+    for column_name in combined_summary_render.columns:
+        if column_name == "Metric":
+            continue
+        combined_summary_render[column_name] = pd.to_numeric(
+            combined_summary_render[column_name],
+            errors="coerce",
+        ).map(lambda value: f"{value:.3f}" if pd.notna(value) else "")
 
-if aggregate_model_comparison.empty:
-    print("No aggregate subtotal benchmark plot is available.")
-else:
-    subtotal_plot_df = aggregate_model_comparison.assign(
-        model=lambda df: df["model_family"].map(model_label),
-        pooling=lambda df: df["pooling_mode"].map(pooling_label),
-        estimate=lambda df: df["estimate_type"].map(estimate_label),
-        label=lambda df: df["model_family"].map(model_label) + " / " + df["pooling_mode"].map(pooling_label) + " / " + df["estimate_type"].map(estimate_label),
+    fig_height = 1.6 * (len(combined_summary_render) + 1) + 0.6
+    fig, ax = plt.subplots(figsize=(16, fig_height))
+    ax.axis("off")
+    table = ax.table(
+        cellText=combined_summary_render.values,
+        colLabels=combined_summary_render.columns,
+        cellLoc="center",
+        loc="center",
     )
-    plt.figure(figsize=(8.5, 4.5))
-    plt.bar(
-        subtotal_plot_df["label"],
-        pd.to_numeric(subtotal_plot_df["heldout_subtotal_rmse_sqrtm"], errors="coerce"),
-        color="#d4a72c",
-        edgecolor="#7a5f12",
-    )
-    plt.ylabel("RMSE Subtotal")
-    plt.xlabel("Model / pooling / estimate")
-    plt.title("Held-out subtotal benchmark comparison")
-    plt.xticks(rotation=35, ha="right")
-    plt.tight_layout()
+    table.auto_set_font_size(False)
+    table.set_fontsize(36)
+    table.scale(4.3, 5.5)
+    try:
+        table.auto_set_column_width(col=list(range(len(combined_summary_render.columns))))
+    except Exception:
+        pass
+
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#444444")
+        cell.set_linewidth(0.4)
+        if row == 0:
+            cell.set_text_props(weight="bold")
+            cell.set_facecolor("#f3f4f6")
+        elif col == 0:
+            cell.set_text_props(ha="left")
+
     plt.show()
 ```
+
+All the POMP models performed substantially better than the baseline ARMA models. The log-likelihoods appear much worse, but this is to be expected. The POMP models are not trying to estimate the data, they're trying to estimate an underlying latent that always upper bounds the data. So while ARMA has a much lower log likelihood, it just tries to fit itself to observed rewards, and hence performs much worse on the normalized benchmark proposed for tracking prediction ability.
+
+The "avg hr corr" and "avg day corr" are average correlations between the prediction and held-out masked data on the hourly level, and on the daily subtotal level respectively. The daily level is more relevant to the task of predicting daily level rewards, but the contrast with the hourly is of note: While these models may predict a single hour poorly, their ability to predict a larger sum of values improves relatively.
+
+For the filtered models, they perform very similarly. The partial pooling performs slightly better on the RMSE Subtotal, but 807 vs 809 is likely within range of Monte Carlo noise. The same trend can be seen in the smoothing case; the personal smoother now performs 0.7 RMSE Subtotal units better.
+
+The smoothers consistently gain a modest boost over the filtered versions, suggesting that the future information does help predict unseen prior information. Interestingly, their daily correlation decreases substantially! We aren't sure why this is. It also presents more of a tradeoff than expected between a filtered estimate and a smoother estimate. 
 
 ```{python}
 #| echo: false
 #| label: results-participant-scatterplots
 
+saved_parameter_plot = REPORT_EXPORT_PLOT_FILES["parameter_scatterplots"]
 scatter_source = aggregate_parameter_summary.copy()
 if not scatter_source.empty:
     scatter_source = scatter_source.loc[scatter_source["model_family"].astype(str) == "ar1"].copy()
 
 required_columns = {"phi", "sigma", "k_fitbit"}
-if scatter_source.empty or not required_columns.issubset(scatter_source.columns):
+if use_report_exports and saved_parameter_plot.exists():
+    display(Image(filename=str(saved_parameter_plot)))
+elif scatter_source.empty or not required_columns.issubset(scatter_source.columns):
     print("No participant-level phi / sigma / k estimates are available for scatter plots.")
 else:
     scatter_source["pooling_mode"] = scatter_source["pooling_mode"].astype(str)
@@ -2256,18 +2325,18 @@ else:
                 label=pooling_label(pooling_mode) if str(pooling_mode) not in plotted_labels else None,
             )
             plotted_labels.add(str(pooling_mode))
-        ax.set_title(title)
-        ax.set_xlabel(x_col)
-        ax.set_ylabel(y_col)
+        ax.set_title(title, fontsize = 20)
+        ax.set_xlabel(x_col, fontsize=18)
+        ax.set_ylabel(y_col, fontsize=18)
         ax.grid(True, alpha=0.25)
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        axes[0].legend(handles, labels, title="pooling", fontsize=9)
+        axes[0].legend(handles, labels, title="pooling", fontsize=13)
     plt.tight_layout()
     plt.show()
 ```
 
-On attempting to migrate our results into a .qmd that could compile on all participants' machines, we ran into a version control merge conflict, which lost us significant progress, and resulted in a subpar measure. A prior run on stronger settings resulted in each of the three pooling measures performing very similarly at about 800 daily RMSE, with the partial performing slightly better than the participant-specific $k$, which was slightly better than the global fit $k$, each with a daily correlation of 0.77. However, those are not recreated here, and we take our presented results at face value. They suggest that the global fit for $k$ is the only one outperforming the baseline ARMA model, and that the partial $k$ performs quite badly!
+Each dot is a fit for a different participant. Visibly there is a minor tradeoff between $\phi$ and $\sigma$. Additionally, there's a small positive trend between fit $k$ and $\sigma$, for both partial and individual pooling. Oddly, the partial fits are slightly more spread than the individual fits.
 
 # Conclusion
 
@@ -2285,31 +2354,23 @@ three maksed subtotal correlation, log likelihood
 paragraph 2: limitations, direction for future analysis, wrap up sentence
 -->
 
-Our project focused on predicting the 24-hour reward for participants using Fitbit step count data. We compared three different AR(1)-based panel POMP models: an individual (no pooling) model, in which each participant has their own over-dispersion parameter $k$; a partial pooling model, in which each participant’s $k$ value is drawn from a shared distribution with a penalty term to prevent extreme deviations; and a global pooling model, in which all participants share the same $k$ value. We also compare to a baseline ARMA model. Our results show that partial pooling performed slightly worse compared to models with no pooling or global pooling. The model with global pooling performed the best. 
+Our project focused on predicting the 24-hour reward for participants using Fitbit step count data. We compared three different AR(1)-based panel POMP models: an individual (no pooling) model, in which each participant has their own over-dispersion parameter $k$; a partial pooling model, in which each participant’s $k$ value is drawn from a shared distribution with a penalty term to prevent extreme deviations; and a global pooling model, in which all participants share the same $k$ value. We also compare to a baseline ARMA model. Our results show highly similar results across the different pooling regimes, and a substantial improvement with mechanistic models over the baseline ARMA fits. Additionally, smoothers modestly reduce error, but reduce day-level masked correlation.
 
-To evaluate performance, we trained each model on 80\% of the observed hourly data and predicted the remaining 20\% of observed step counts. We calculated the masked subtotal error ($\text{RMSE}_\frac{\text{subtotal}}{\sqrt{m}}$), which describes the difference between predicted and observed values, for the remaining 20\%. Additionally, we computed the correlation between observed and predicted step counts at both the daily and hourly levels. The hourly correlation was 0.27, whereas the daily reward correlation was much stronger at 0.77. We also used log-likelihood as an additional evaluation measure.
+To evaluate performance, we trained each model on 80\% of the observed hourly data and predicted the remaining 20\% of observed step counts. We calculated the masked subtotal error ($\text{RMSE}_\frac{\text{subtotal}}{\sqrt{m}}$), which describes the difference between predicted and observed values, for the remaining 20\%, normalized across a single day.
 
 In future work, there are several additional methods we could explore in our model specification. Our current latent process model only incorporates baseline averages over hour of day and week. For $log \lambda_t$, we could try including additional covariates related to physical activity, such as heart rate and sleep. Additionally, we were not able to model the measurement distribution jointly across all three devices for participants who used multiple devices, and therefore could not fully leverage all available data. Instead, we focused primarily on Fitbit data due to difficulties in disentangling device-specific biases. In terms of parameter sharing, we also considered clustering participants based on shared characteristics, such as similar sleep schedules, to better capture common behavioral patterns.
 
 In terms of model structure, there are also limitations imposed by the pypomp library. We initially intended to include a broader set of covariates and use LASSO regularization for participant-specific feature selection to improve flexibility in modeling long-term dependencies. However, this was not feasible within the current framework of the library.
 
-There are also more robust approaches we could have used to evaluate model accuracy. In our analysis, we only applied masking to 20% of non-missing hourly observations per participant. Future work could explore a range of masking proportions to assess sensitivity to missingness. Additionally, masking could be applied in different structures, such as contiguous hourly blocks, full-day removals, or random missingness patterns.
+There are more robust approaches we could have used to evaluate model accuracy. In our analysis, we only applied masking to 20% of non-missing hourly observations per participant. Future work could explore a range of masking proportions to assess sensitivity to missingness. Additionally, masking could be applied in different structures, such as contiguous hourly blocks, full-day removals, or random missingness patterns.
 
-Finally, there are limitations in our choice of benchmark and evaluation metric. We used masked subtotal error, described as the difference between predicted and observed values on masked non-missing hourly observations. This choice was necessary because observed step counts during missing periods are recorded as zero, which may not reflect true step counts if participants were not wearing their devices. As a result, computing error against these zeros would be misleading. Instead, we restricted evaluation to masked data that was originally observed. If more time were available, we would conduct simulation studies with known latent step counts to compute a more standard metric such as RMSE.
+Finally, we had a major reproducibility incident in the last hours of the submission day. The complexity of the model was large, and between merging code from multiple participants, the panel pomp fits which compiled on one group member's machine with GPU was not able to compile on the other group members' machines. While attempting to fix this, so that the .qmd was robust to small RL=0 CPU runs, and large RL=2 GPU runs, with caching implemented, there was a git merge conflict. In resolving this conflict by returning to a prior branch, very expensive cached model parameters were lost. In order to submit, the model parameters for the panel pomp were recomputed, with the benchmarked results saved externally, and imported to the document. 
 
-<!--
-Earlier draft:
-Our analysis focuses on reconstructing missing hourly Fitbit activity and the implied 24-hour reward using panel POMP models. The aggregate cache-first pipeline lets us compare participant-specific, globally pooled, and partially pooled AR(1) models, together with an ARMA baseline, on the same held-out masking benchmark. Across the final RL=2 comparison, partial pooling gives only a modest improvement over the no-pooling alternative, which suggests some shared structure in Fitbit measurement dispersion but not a dramatic gain from pooling.
-
-The main limitations are computational and structural. We limited attention to Fitbit-only measurement models, used a single masking regime, and did not yet rebuild the backward smoothing layer for efficient panel execution. Future work should expand the covariate set to include variables such as heart rate and sleep, explore multi-device observation models, investigate participant clustering for parameter sharing, and compare alternative masking regimes such as contiguous blocks or full-day masking. We also ran into practical limitations of the current `pypomp` framework when trying to vary feature sets across participants, which constrained the model space we could explore.
-
-Limitations:
-Potentially benchmarking limitations. We would like to include more covariates such as heartrate and sleep. We ran into a limitation with pypomp that it doesn't easily support different feature sets for different participants, but mathematically a pomp model could do this and it would be useful here. We would like to model the measurement distribution for all three devices, because some users use multiple devices, and leveraging them jointly would be good. Participant clustering to pool parameters for participants who are similar (such as people who have similar sleep schedules). Models we didn't get to try. How much masking affects performance. Different ways of doing masking (contiguous, across whole days, totally random, etc).
--->
+If we had more time, our immediate priority would be to fix these compile errors, and reimplement the results to run directly from the computations within the qmd. For any future students, let this be a lesson to plan your version control and prioritize incremental change which works across devices in the very early stages of the project.
 
 # Contributions
 
-- Group Member 1: Model design and implementation
+- Group Member 1: Model and benchmark design, implementation of panel pomps on local GPU, and messed up version control, and reproducibility.
 - Group Member 2: EDA, section 1.2, section 4 figures, analysis brainstorming, editing and formatting
 - Group Member 3: EDA, abstract, introduction literature review, conclusion, analysis brainstorming, editing and formatting
 
@@ -2397,64 +2458,3 @@ else:
     print("Exploratory local/global search tables are omitted in this aggregate final draft.")
 ```
 
-```{python}
-#| warning: false
-#| message: false
-#| echo: false
-#| output: asis
-
-supplementary_latex_ready = all(
-    name in globals()
-    for name in [
-        "local_if2_controls",
-        "global_stage_controls_display",
-        "global_start_box_display",
-        "render_side_by_side_tables_latex",
-    ]
-)
-if supplementary_latex_ready:
-    local_controls_display = (
-        pd.DataFrame(
-            [
-                {
-                    "Particles": local_if2_controls["particles"],
-                    "IF2 iterations": local_if2_controls["mif_iterations"],
-                    "Cooling fraction": local_if2_controls["cooling_fraction"],
-                    "RW SD scale": local_if2_controls["rw_sd_scale"],
-                    "Evaluation particles": local_if2_controls["evaluation_particles"],
-                    "Evaluation pfilter reps": local_if2_controls["evaluation_pfilter_reps"],
-                }
-            ],
-            index=["Local"],
-        )
-        .transpose()
-        .reset_index()
-    )
-    local_controls_display.columns = ["Setting", "Local"]
-    print(
-        render_side_by_side_tables_latex(
-            [
-                {
-                    "caption": "Local IF2 controls",
-                    "width": 0.27,
-                    "df": local_controls_display,
-                    "precision": 3,
-                },
-                {
-                    "caption": "Global IF2 stage controls",
-                    "width": 0.43,
-                    "df": global_stage_controls_display,
-                    "precision": 3,
-                },
-                {
-                    "caption": "Global start box",
-                    "width": 0.24,
-                    "df": global_start_box_display,
-                    "precision": 3,
-                },
-            ]
-        )
-    )
-else:
-    print("Exploratory IF2 supplementary tables are omitted in this aggregate final draft.")
-```
