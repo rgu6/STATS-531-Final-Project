@@ -1203,7 +1203,6 @@ The following data files were used for this project:
       + SleepMissing: binary indicator of whether data was collected for sleep during that hour (1 = no data, 0 = data collected)
     + moodScore: scores range from 0 to 10 based on a survey
     + messageSent: binary indicator of whether the agent sent the participant a message during that hour (1 = message was sent, 0 = no message was sent)
-    + messageStrategy: NOT SURE
 
 ## Masked Subtotal Benchmarking Metric
 
